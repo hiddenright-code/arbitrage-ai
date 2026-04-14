@@ -24,11 +24,77 @@ live simulation tracking.
 - Live simulation tracking for strategy validation
 - Real-time dashboard with 8 analytical tabs
 
-## Backtest Results
-- 48.6% win rate across 74 trades
-- Profit Factor: 1.513
-- Sharpe Ratio: 5.33
-- 73.9% win rate on high-confidence signals (0.75+)
+## Dashboard
+
+Eight-tab React dashboard for monitoring and control.
+
+| Tab | Purpose |
+|---|---|
+| Sim Results | Live simulation tracking — win rate, PnL, exit reasons, open positions |
+| Quant | Regime grid per coin, actionable signals with indicator breakdown |
+| Arb | Cross-exchange opportunities (BinanceUS ↔ Kraken) |
+| Triangular | Triangular arb with ML cycle rankings |
+| Intelligence | Hourly activity chart, top cycle leaderboard |
+| Backtest | Full backtest with confidence analysis, ablation tests, coin breakdown |
+| Trades | Completed real and simulated trades |
+| Log | Event log with change-detection (no spam on repeated signals) |
+
+---
+
+## Strategies Implemented
+
+### 1. Cross-Exchange Arbitrage
+Scans the same trading pair across Binance.US and Kraken simultaneously, detecting price differences large enough to profit from after fees. Coinbase excluded from arb detection — its 0.6% taker fee requires a 0.78% gross spread to break even, which is rarely achievable on major pairs.
+
+**Net profit formula:**
+```
+grossProfit = (sellPrice - buyPrice) / buyPrice
+totalFees = buyFee + sellFee + withdrawalFee
+netProfit = grossProfit - totalFees
+```
+
+### 2. Triangular Arbitrage (Binance.US)
+Auto-generates all valid `USDT → A → B → USDT` cycles from 12 configured assets (28 cycles on Binance.US). Profits from price mismatches between three trading pairs on the same exchange — no inter-exchange transfer delays.
+
+**Cycle math:**
+```
+unitsA  = 1 / leg1.ask
+unitsB  = unitsA / leg2.ask  (forward) or unitsA × leg2.bid (reverse)
+endUSDT = unitsB × leg3.bid
+netProfit = (endUSDT - 1) - (fee × 3)
+```
+
+**ML Cycle Scoring Engine:**
+```
+score = (avgSpread × 0.40) + (hitRate × 0.30) +
+        (volatility × 0.20) + (recency × 0.10)
+```
+Uses exponential weighted moving average (decay 0.92) to prioritize recently profitable cycles, with hourly activity tracking to identify optimal trading windows.
+
+### 3. Quantitative Mean Reversion
+Regime-aware strategy operating on 500 × 4h candles (~83 days of historical data). Detects when a coin has moved too far from its statistical mean and is likely to revert — completely independent of execution latency.
+
+---
+
+## Backtesting Framework
+
+Custom walk-forward backtester (`src/backtester.js`) with realistic simulation.
+
+**Methodology:**
+- Slides forward candle by candle through 500 historical candles
+- Entries at next candle open (no same-candle fills)
+- TP/SL checked against candle high/low (not just close)
+- 0.2% round-trip fee deducted from every trade
+- Proper Sharpe annualization by actual trade frequency
+
+**Metrics:**
+- Win rate, PnL, profit factor, Sharpe ratio, max drawdown
+- Performance by coin, strategy, regime, and confidence bucket
+- Exit reason breakdown (TP vs SL vs time exit)
+- Ablation testing — removes one component at a time to measure impact
+- V3 preview — tests selective parameters alongside full system
+
+---
 
 ## Setup
 1. Clone the repo
@@ -43,23 +109,3 @@ This is a research and educational project.
 Not financial advice. Trade at your own risk.
 
 
-## PENDING TESTS:
-	1. Pitch badge count decrement — Accept or decline a pitch on insider account, confirm Pitches tab badge in bottom nav decrements by 1 immediately without page reload.
-	2. Declined pitch reasons visible to seeker — Decline a pitch with specific reasons on insider account, confirm seeker sees exact reasons on their matches page declined pitch card.
-	3. Submitted stage red dot — Insider marks match as Submitted, confirm red notification dot appears on seeker's Matches tab in bottom nav, confirm dot clears when seeker visits matches page.
-	4. Dynamic badge system — Add education + employment data to seeker profile, confirm correct badges appear on insider feed card (education degree with school abbreviation, experience years, student/recent grad if applicable, trust badges, status badges). Also confirm insider profile shows correct badges post-match.
-	5. Rate limiting — Send 3 pitches as unverified seeker, confirm 4th pitch blocked with exact reset date shown. Manually add Community Verified badge in Supabase, confirm limit raises to 4. Add Portfolio Linked badge, confirm limit raises to 6.
-	6. Company cooldown — Pitch 2 different insiders at same company, confirm 3rd pitch at same company blocked with cooldown end date shown.
-	7. Email notifications — Using verified Resend email: pitch accepted email arrives branded correctly, pitch declined with reasons email arrives branded correctly, pipeline hired email arrives branded correctly. All three need to be tested end to end.
-	8. Pipeline reminder notifications — Manually test by temporarily reducing time thresholds in check_pipeline_reminders() SQL function to minutes instead of hours, trigger cron manually, confirm 48hr in-app notification appears, 7d in-app + email fires, 14d in-app + email fires, 18d match flagged as stale + seeker in-app + insider email fires.
-	9. Full account deletion — Delete a test account, confirm all rows removed from all tables: users, matches, messages, pitches, notifications, seeker_profiles, insider_profiles, portfolio_links, education, employment, badges, barakah_log, notification_settings, referral_vault.
-	10. Name change logging + flagging — Change name once (confirm name_change_log row created, no flag). Change again (confirm 2nd log row, is_flagged = true on users table). Change 3rd time (allowed, 3rd log row). Attempt 4th change (blocked with error message).
-	11. Feed filters with multiple profiles — Needs multiple seeker accounts with varied data: different visa statuses, work preferences, relocation preferences, locations, and education statuses. Test each filter individually and in combination. Test "No results" state and clear filters.
-	12. Student badge — Create seeker with education.not_graduated = true, confirm Student badge appears on insider feed card.
-	13. Recent grad badge — Create seeker with graduation_year = current year, no employment entries, not a current student, confirm Recent Grad badge appears on feed card.
-	14. Match archiving full flow — Archive match from active tab, confirm disappears immediately. Switch to archived tab, confirm appears there. Open chat from archived tab, press back, confirm returns to archived tab not active. Unarchive, confirm returns to active tab. Auto-archive: mark stage as complete, confirm match moves to archived automatically.
-	15. Declined pitch archive — Archive a declined pitch, confirm it disappears from active tab and does NOT appear in archived tab. Confirm data still exists in Supabase pitches table with is_archived = true.
-	16. Seeker profile pause — Pause profile on seeker account. Log in as insider, confirm paused seeker no longer appears in talent feed. Log back in as seeker, confirm existing matches and chats still accessible. Confirm seeker can still pitch an insider while paused. Resume profile, confirm seeker reappears in insider feed.
-	17. Branded email confirmation — Register new account with verified Resend email, confirm branded MRN confirmation email arrives with correct green header styling, tagline, and working confirmation link that redirects to onboarding.
-	18. In-app notification on decline — Decline a pitch as insider, log in as seeker, confirm in-app notification appears with company name and correct message.
-Auth callback error handling — Use an expired confirmation link, confirm page redirects to /register with "link expired" error message instead of spinning forever.
