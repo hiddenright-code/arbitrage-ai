@@ -53,6 +53,64 @@ export const SETTINGS = {
     float:     0.15,   // Float size (smaller = higher score)
   },
 
+  // ── Short Interest Data Providers (ORTEX + FINRA) ────────────
+  // Real short-interest data dramatically improves squeeze detection.
+  // Both are optional — without them the detector falls back to a
+  // volume-pattern estimate. Configure via .env (see .env example).
+  SHORT_INTEREST: {
+    // ORTEX — real-time estimated SI, CTB, utilization, DTC (paid API)
+    ORTEX_ENABLED:  !!process.env.ORTEX_API_KEY,
+    ORTEX_API_KEY:  process.env.ORTEX_API_KEY  || '',
+    ORTEX_BASE_URL: process.env.ORTEX_BASE_URL || 'https://api.ortex.com',
+    // Path template — {ticker} and {exchange} are substituted per call.
+    // Adjust to match your ORTEX subscription's endpoint if needed.
+    ORTEX_SI_PATH:  process.env.ORTEX_SI_PATH  || '/api/v1/short_interest/{exchange}/{ticker}',
+    ORTEX_EXCHANGE: process.env.ORTEX_EXCHANGE || 'NASDAQ',
+
+    // FINRA — official consolidated short interest (free, OAuth2, lagged)
+    FINRA_ENABLED:       !!(process.env.FINRA_CLIENT_ID && process.env.FINRA_CLIENT_SECRET),
+    FINRA_CLIENT_ID:     process.env.FINRA_CLIENT_ID     || '',
+    FINRA_CLIENT_SECRET: process.env.FINRA_CLIENT_SECRET || '',
+    FINRA_TOKEN_URL:     process.env.FINRA_TOKEN_URL     || 'https://api.finra.org/oauth/v1/token',
+    FINRA_BASE_URL:      process.env.FINRA_BASE_URL      || 'https://api.finra.org',
+    FINRA_GROUP:         process.env.FINRA_GROUP         || 'otcMarket',
+    FINRA_DATASET:       process.env.FINRA_DATASET       || 'consolidatedShortInterest',
+
+    CACHE_TTL_MS:    Number(process.env.SI_CACHE_TTL_MS) || 15 * 60 * 1000, // 15 min
+    MAX_CONCURRENCY: 5,    // Parallel SI lookups per scan (rate-limit guard)
+  },
+
+  // ── Short Squeeze Scoring (Fuel + Ignition model) ────────────
+  // A squeeze needs BOTH a loaded powder keg (short-side fuel) and a
+  // lit fuse (price/volume ignition). Each is scored independently,
+  // then blended — with a synergy bonus when both are strong.
+  SQUEEZE: {
+    // FUEL — the short-side setup (from real SI data). Re-normalized
+    // over whichever components are available.
+    FUEL_WEIGHTS: {
+      siPercentFloat: 0.40,  // SI as % of free float — #1 squeeze fuel
+      daysToCover:    0.25,  // short-interest ratio (exit difficulty)
+      costToBorrow:   0.20,  // borrow-fee pain forcing covers
+      utilization:    0.15,  // lendable-share exhaustion (hard-to-borrow)
+    },
+    // IGNITION — the squeeze firing now (from price/volume)
+    IGNITION_WEIGHTS: {
+      volumeToFloat: 0.30,
+      velocity:      0.30,
+      gapUp:         0.20,
+      rvol:          0.10,
+      consecutive:   0.10,
+    },
+    FUEL_WEIGHT:     0.55,  // setup weighted slightly higher than trigger
+    IGNITION_WEIGHT: 0.45,
+    SYNERGY_BONUS:   0.15,  // added when fuel ≥0.6 AND ignition ≥0.6
+    SYNERGY_FLOOR:   0.60,  // threshold each side must clear for synergy
+    // When no real SI data, fuel is estimated → discount its reliability
+    ESTIMATED_FUEL_DISCOUNT: 0.85,
+    // Intensity tier cutoffs
+    TIERS: { EXTREME: 0.75, HIGH: 0.55, MODERATE: 0.35 },
+  },
+
   // ── Fees ─────────────────────────────────────────────────────
   FEES: { Alpaca: 0.0 },          // Commission-free
 

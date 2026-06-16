@@ -98,11 +98,27 @@ const SignalCard = ({ signal, index, onExecute, realMoneyMode }) => {
         {signal.volume    != null && <span>Vol <span className="text-white">{(signal.volume / 1e6).toFixed(1)}M</span></span>}
       </div>
 
-      {/* Squeeze score */}
+      {/* Squeeze score + sub-scores */}
       {signal.squeezeScore != null && (
         <div className="mt-2 text-xs text-gray-500">
-          Squeeze pressure: <span className="text-pink-400 font-bold">{(signal.squeezeScore * 100).toFixed(0)}/100</span>
-          <span className="ml-2 text-gray-600">({signal.squeezeIntensity})</span>
+          Squeeze: <span className="text-pink-400 font-bold">{(signal.squeezeScore * 100).toFixed(0)}/100</span>
+          <span className="ml-2 text-gray-600">({signal.squeezeIntensity}{signal.squeezeType ? ` · ${signal.squeezeType.replace(/_/g, ' ').toLowerCase()}` : ''})</span>
+          {signal.squeezeFuel != null && (
+            <span className="ml-2 text-gray-600">⛽ fuel {(signal.squeezeFuel * 100).toFixed(0)} · 🔥 ignition {(signal.squeezeIgnition * 100).toFixed(0)}</span>
+          )}
+        </div>
+      )}
+
+      {/* Real short-interest data (ORTEX / FINRA) */}
+      {signal.shortInterest && (
+        <div className="mt-2 flex flex-wrap gap-3 text-xs bg-pink-500/5 border border-pink-500/20 rounded px-2 py-1">
+          <span className="text-pink-300 font-bold uppercase">{signal.shortInterest.source}</span>
+          {signal.shortInterest.siPercentFloat != null && <span className="text-gray-400">SI <span className="text-pink-400">{signal.shortInterest.siPercentFloat.toFixed(1)}%</span> float</span>}
+          {signal.shortInterest.daysToCover   != null && <span className="text-gray-400">DTC <span className="text-white">{signal.shortInterest.daysToCover.toFixed(1)}d</span></span>}
+          {signal.shortInterest.costToBorrow  != null && <span className="text-gray-400">CTB <span className="text-amber-400">{signal.shortInterest.costToBorrow.toFixed(0)}%</span></span>}
+          {signal.shortInterest.utilization   != null && <span className="text-gray-400">Util <span className="text-white">{signal.shortInterest.utilization.toFixed(0)}%</span></span>}
+          {signal.shortInterest.siTrend       && <span className={signal.shortInterest.siTrend === 'rising' ? 'text-red-400' : 'text-gray-500'}>SI {signal.shortInterest.siTrend}</span>}
+          {signal.shortInterest.stale && <span className="text-gray-600">(lagged)</span>}
         </div>
       )}
 
@@ -164,6 +180,9 @@ const RunnerCard = ({ runner }) => {
           <Badge color="gray">score {(s.total * 100).toFixed(0)}</Badge>
           {runner.squeeze?.isSqueezePlay && runner.squeeze.intensity !== 'LOW' && (
             <Badge color="pink">🔥 {runner.squeeze.intensity}</Badge>
+          )}
+          {runner.squeeze?.shortInterest?.siPercentFloat != null && (
+            <Badge color="pink">SI {runner.squeeze.shortInterest.siPercentFloat.toFixed(0)}%</Badge>
           )}
           {runner.news?.hasCatalyst && <Badge color="purple">📰 {runner.news.catalysts[0]?.label}</Badge>}
         </div>
@@ -513,6 +532,10 @@ export default function PennyStockBot() {
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-xs text-gray-500 space-y-1 max-w-lg">
             <p className="text-gray-300 font-bold mb-2">Active Config</p>
             <p>Broker: <span className="text-white">{config.broker?.broker} ({config.broker?.paper ? 'Paper' : 'Live'})</span></p>
+            <p>Short interest: <span className="text-white">
+              ORTEX {config.shortInterestProviders?.ortex ? '✅' : '❌'} · FINRA {config.shortInterestProviders?.finra ? '✅' : '❌'}
+              {!config.shortInterestProviders?.anyRealData && <span className="text-amber-400"> (estimated — add keys for real SI)</span>}
+            </span></p>
             <p>Price range: <span className="text-white">${config.priceRange?.[0]} – ${config.priceRange?.[1]}</span></p>
             <p>Min RVOL: <span className="text-white">{config.minRvol}x</span></p>
             <p>Min change: <span className="text-white">{config.minChangePct}%</span></p>

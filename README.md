@@ -52,21 +52,41 @@ during market-wide selloffs, when small caps get hit hardest.
 
 ## 🩳 Short Squeeze Detection (`shortSqueezeDetector.js`)
 
-A weighted squeeze-pressure score (0–1) built from five components:
+A state-of-the-art **Fuel + Ignition** model. A squeeze needs *both* a
+loaded powder keg (a large trapped short position) and a lit fuse (price/
+volume firing). Each side is scored independently, blended, then given a
+**synergy bonus** when both are strong at once — the real edge.
 
-1. **Volume-to-Float ratio** (30%) — if today's volume exceeds the float,
-   every short had to trade against massive buy pressure — classic squeeze.
-2. **Intraday velocity** (25%) — parabolic moves off the day's low =
-   shorts being squeezed in real time.
-3. **Estimated Days-to-Cover** (20%) — surging volume against a trapped
-   short base. *(Estimated from volume patterns; connect ORTEX/FINRA for
-   real short-interest data.)*
-4. **Gap-up analysis** (15%) — gap-up opens trap overnight shorts.
-5. **Consecutive up-days** (10%) — multi-day runners trap progressively
-   more shorts.
+### Fuel — the short-side setup (from REAL short-interest data)
+Pulled live from **ORTEX** and **FINRA** (see below):
+- **SI % of free float** (40%) — the #1 squeeze metric. >20% high, >40% extreme.
+- **Days to Cover** (25%) — short interest ÷ avg daily volume. >5 = hard to exit.
+- **Cost to Borrow** (20%) — annualized borrow fee. High/rising = shorts bleeding.
+- **Utilization** (15%) — % of lendable shares lent. ~100% = hard-to-borrow.
+- **SI trend** modifier — shorts *adding* into a rising price = most trapped.
 
-Intensity tiers: `LOW → MODERATE → HIGH → EXTREME`. A `short_squeeze`
-signal targets aggressive profit levels because squeezes can run hard.
+### Ignition — the squeeze firing now (from price/volume)
+- Volume-to-float, intraday velocity, gap-up, RVOL, consecutive up-days.
+
+Final score blends fuel (55%) and ignition (45%), +15% synergy bonus when
+both clear 0.60. Output includes a **squeeze type** tag
+(`HARD_TO_BORROW`, `HIGH_SHORT_INTEREST`, `HIGH_DAYS_TO_COVER`,
+`MOMENTUM_ONLY`, `LOADED_NOT_FIRING`, `DEVELOPING`) and intensity tiers
+`LOW → MODERATE → HIGH → EXTREME`.
+
+If neither data provider is configured, fuel is **estimated** from volume
+patterns and flagged as lower-confidence — the bot still runs, just blind
+to the short side.
+
+### Real data sources (`shortInterestData.js`)
+| Provider | What it gives | Notes |
+|---|---|---|
+| **ORTEX** | SI%, DTC, cost-to-borrow, utilization, SI trend | Real-time estimates, paid API. The squeeze edge. |
+| **FINRA** | Official settled shares-short, DTC, avg volume | Free, OAuth2, published twice/month (~8-day lag). Ground-truth anchor. |
+
+ORTEX is primary for live fields; FINRA fills gaps and validates. Data is
+merged into one shape, cached 15 min, and fails soft to the estimate.
+Endpoints and auth are env-configurable (see `.env example`).
 
 ---
 

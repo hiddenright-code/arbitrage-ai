@@ -21,6 +21,7 @@ import { executeLiveTrade, emergencyStop } from './src/liveExecutor.js';
 import { scanRunners } from './src/pennyStockScanner.js';
 import { analyzeNewsMulti } from './src/newsAnalyzer.js';
 import { detectSqueezeSetup } from './src/shortSqueezeDetector.js';
+import { getShortInterestMulti, getProviderStatus } from './src/shortInterestData.js';
 import { assessMarketHealth } from './src/regimeDetector.js';
 import { generateSignals } from './src/signalEngine.js';
 import { fetchSnapshots, fetchDailyBars, fetchMinuteBars } from './src/priceHistory.js';
@@ -59,12 +60,21 @@ async function runScanPipeline() {
     fetchSnapshots([SETTINGS.SPY_SYMBOL, SETTINGS.QQQ_SYMBOL]),
   ]);
 
+  // Pull real short-interest data (ORTEX + FINRA) for the runner set
+  const floatMap = {};
+  for (const r of runners) floatMap[r.symbol] = r.snapshot.floatShares ?? null;
+  const siMap = await getShortInterestMulti(symbols, floatMap);
+
   const squeezeMap    = {};
   const minuteBarsMap = {};
   await Promise.all(
     runners.map(async (r) => {
       const dailyBars = await fetchDailyBars(r.symbol, 30);
-      squeezeMap[r.symbol]    = detectSqueezeSetup(r.snapshot, dailyBars);
+      const si        = siMap[r.symbol] ?? null;
+      // Backfill real free float onto the snapshot so all downstream
+      // float math (squeeze + scoring) uses ground-truth when available
+      if (si?.freeFloat) r.snapshot.floatShares = si.freeFloat;
+      squeezeMap[r.symbol]    = detectSqueezeSetup(r.snapshot, dailyBars, si);
       minuteBarsMap[r.symbol] = await fetchMinuteBars(r.symbol, 120);
     })
   );
@@ -235,6 +245,7 @@ app.get('/api/clock', async (req, res) => {
 app.get('/api/config', (req, res) => {
   res.json({
     broker:            getBrokerInfo(),
+    shortInterestProviders: getProviderStatus(),
     priceRange:        [SETTINGS.PRICE_MIN, SETTINGS.PRICE_MAX],
     minRvol:           SETTINGS.MIN_RVOL,
     minChangePct:      SETTINGS.MIN_CHANGE_PCT,

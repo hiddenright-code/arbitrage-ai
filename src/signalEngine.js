@@ -144,6 +144,10 @@ function shortSqueezeSignal(runner, newsData, squeezeData) {
     takeProfitAggressive: +(price * 2).toFixed(4),  // 100% target for extreme squeezes
     squeezeScore:     squeezeData.squeezeScore,
     squeezeIntensity: squeezeData.intensity,
+    squeezeType:      squeezeData.squeezeType,
+    squeezeFuel:      squeezeData.fuel,
+    squeezeIgnition:  squeezeData.ignition,
+    shortInterest:    squeezeData.shortInterest,   // real SI from ORTEX/FINRA
     rvol,
     changePct,
     volume:  snapshot.volume,

@@ -14,3 +14,32 @@ ALPACA_FEED=iex
 
 # Risk limit — max dollars per single position
 MAX_TRADE_AMOUNT_USD=20
+
+# ─────────────────────────────────────────────────────────────
+# SHORT INTEREST DATA (optional but strongly recommended)
+# Without these, squeeze "fuel" is estimated from volume patterns.
+# With them, the detector uses real SI%, days-to-cover, cost-to-borrow
+# and utilization — the metrics that actually drive squeezes.
+# ─────────────────────────────────────────────────────────────
+
+# ORTEX — real-time estimated short interest (paid). The squeeze edge.
+# Sign up at https://www.ortex.com → API access in account settings.
+ORTEX_API_KEY=
+# Override only if your plan uses a different host/path/exchange:
+# ORTEX_BASE_URL=https://api.ortex.com
+# ORTEX_SI_PATH=/api/v1/short_interest/{exchange}/{ticker}
+# ORTEX_EXCHANGE=NASDAQ
+
+# FINRA — official consolidated short interest (free, OAuth2, lagged).
+# Register an API account at https://developer.finra.org and create
+# API credentials (client id + secret) with Data API access.
+FINRA_CLIENT_ID=
+FINRA_CLIENT_SECRET=
+# Override only if FINRA changes its endpoints:
+# FINRA_TOKEN_URL=https://api.finra.org/oauth/v1/token
+# FINRA_BASE_URL=https://api.finra.org
+# FINRA_GROUP=otcMarket
+# FINRA_DATASET=consolidatedShortInterest
+
+# How long to cache SI data (ms). SI changes slowly — 15 min default.
+# SI_CACHE_TTL_MS=900000
