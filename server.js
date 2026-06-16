@@ -21,7 +21,7 @@ import { executeLiveTrade, emergencyStop } from './src/liveExecutor.js';
 import { scanRunners } from './src/pennyStockScanner.js';
 import { analyzeNewsMulti } from './src/newsAnalyzer.js';
 import { detectSqueezeSetup } from './src/shortSqueezeDetector.js';
-import { getShortInterestMulti, getProviderStatus } from './src/shortInterestData.js';
+import { getShortInterest, getShortInterestMulti, getProviderStatus } from './src/shortInterestData.js';
 import { assessMarketHealth } from './src/regimeDetector.js';
 import { generateSignals } from './src/signalEngine.js';
 import { fetchSnapshots, fetchDailyBars, fetchMinuteBars } from './src/priceHistory.js';
@@ -236,6 +236,17 @@ app.get('/api/balances', async (req, res) => {
 
 app.get('/api/status', async (req, res) => {
   res.json({ Alpaca: await testConnection() });
+});
+
+// Debug endpoint — verify ORTEX/FINRA data is returning correctly for a symbol.
+// Example: GET /api/debug/short-interest/GME
+app.get('/api/debug/short-interest/:symbol', async (req, res) => {
+  try {
+    const si = await getShortInterest(req.params.symbol.toUpperCase());
+    res.json(si);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/clock', async (req, res) => {
