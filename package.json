@@ -1,15 +1,14 @@
 {
-  "name": "arbitrage-agent",
-  "version": "1.0.0",
+  "name": "penny-stock-runner-bot",
+  "version": "2.0.0",
   "type": "module",
-  "description": "Crypto Arbitrage Bot — Binance.US + Coinbase + Kraken",
+  "description": "Penny Stock Runner Bot — Alpaca-powered momentum, short-squeeze & news-catalyst scanner",
   "scripts": {
     "frontend": "vite",
     "backend": "node server.js",
-    "test-connections": "node src/testConnection.js"
+    "test-connection": "node src/testConnection.js"
   },
   "dependencies": {
-    "ccxt": "^4.0.0",
     "cors": "^2.8.6",
     "dotenv": "^16.0.0",
     "express": "^5.2.1",

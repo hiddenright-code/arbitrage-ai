@@ -1,67 +1,85 @@
 // ─────────────────────────────────────────────────────────────
-// CONFIG.JS — Single source of truth
+// CONFIG.JS — Penny Stock Runner Bot Settings
 // ─────────────────────────────────────────────────────────────
 
 export const SETTINGS = {
 
-  // ── Cross-exchange arb ──────────────────────────────────────
-  // Coinbase stays connected for balance display only —
-  // its 0.6% fee requires ~0.78% gross spread to break even,
-  // which almost never occurs on major pairs.
-  EXCHANGES:     ['BinanceUS', 'Kraken', 'Coinbase'],
-  ARB_EXCHANGES: ['BinanceUS', 'Kraken'], // Only these two for cross-exchange scanning
+  // ── Broker ───────────────────────────────────────────────────
+  BROKER:        'Alpaca',
+  PAPER_TRADING: process.env.ALPACA_PAPER !== 'false',  // Paper trade by default
 
-  PAIRS: [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT',
-    'DOGE/USDT', 'LTC/USDT', 'XRP/USDT',
-    'LINK/USDT', 'AVAX/USDT', 'ADA/USDT',
-  ],
-  
-  // ── Triangular arb (Binance.US only) ───────────────────────
-  TRIANGULAR_EXCHANGE: 'BinanceUS',
+  // ── Penny Stock Universe Filters ─────────────────────────────
+  PRICE_MIN:          0.10,       // Minimum price ($)
+  PRICE_MAX:          5.00,       // Maximum price — penny stock threshold
+  MIN_DAILY_VOLUME:   500_000,    // 500K min shares/day (avoids illiquid traps)
+  TOP_ACTIVE_STOCKS:  100,        // Scan top N most-active stocks for candidates
 
-  // Assets used to auto-generate USDT→A→B→USDT cycles
-  TRIANGULAR_ASSETS: [
-    'BTC', 'ETH', 'SOL', 'BNB',
-    'DOGE', 'LTC', 'XRP', 'LINK',
-    'AVAX', 'ADA', 'DOT', 'MATIC',
-  ],
+  // ── Runner Criteria (all must pass to be a candidate) ────────
+  MIN_RVOL:          3.0,         // Relative volume ≥3x avg = unusual activity
+  RVOL_STRONG:      10.0,         // ≥10x = explosive (strong conviction)
+  MIN_CHANGE_PCT:    5.0,         // Must be up ≥5% today (momentum confirmation)
+  STRONG_CHANGE_PCT: 20.0,        // ≥20% = strong runner
 
-  // ── Fees ───────────────────────────────────────────────────
-  FEES: {
-    BinanceUS: 0.001,   // 0.10%
-    Coinbase:  0.006,   // 0.60%
-    Kraken:    0.0016,  // 0.16%
+  // ── Float Tier Thresholds (shares) ───────────────────────────
+  // Smaller float = fewer shares to push price = bigger % moves
+  FLOAT_SMALL:  10_000_000,       // <10M   = explosive potential
+  FLOAT_MEDIUM: 50_000_000,       // <50M   = good
+  FLOAT_LARGE:  200_000_000,      // <200M  = acceptable
+
+  // ── Signal Thresholds ────────────────────────────────────────
+  MIN_SIGNAL_SCORE:       0.45,
+  AUTO_EXECUTE_THRESHOLD: 0.75,
+
+  // ── Trade Sizing ─────────────────────────────────────────────
+  CAPITAL_PER_TRADE: 9,           // Default USD per position
+  MAX_POSITION_SIZE: 25,          // Hard cap USD per position
+  MAX_SLIPPAGE_PCT:  0.03,        // 3% max slippage (penny stocks gap)
+
+  // ── Risk Management ──────────────────────────────────────────
+  STOP_LOSS_PCT:            0.08,  // 8% hard stop
+  TAKE_PROFIT_PCT:          0.25,  // Primary target: +25%
+  TAKE_PROFIT_AGGRESSIVE:   0.50,  // Extended target: +50%
+  MAX_HOLD_HOURS:           7,     // Max 7 hours — must exit by close
+  MAX_OPEN_POSITIONS:       3,
+  MAX_DAILY_LOSS_USD:       25,
+  MAX_CONSECUTIVE_LOSSES:   3,
+  COOLDOWN_MINUTES:         60,
+
+  // ── Runner Scoring Weights (must sum to 1.0) ─────────────────
+  SCORE_WEIGHTS: {
+    rvol:      0.35,   // Relative volume — primary runner indicator
+    momentum:  0.30,   // % price gain today
+    technical: 0.20,   // VWAP position, RSI, range position
+    float:     0.15,   // Float size (smaller = higher score)
   },
 
-  WITHDRAWAL_FEES: {
-    BinanceUS: 0.0004,
-    Coinbase:  0.001,
-    Kraken:    0.0002,
-  },
+  // ── Fees ─────────────────────────────────────────────────────
+  FEES: { Alpaca: 0.0 },          // Commission-free
 
-  // ── Thresholds ─────────────────────────────────────────────
-  MIN_PROFIT_THRESHOLD:   0.001,  // show cycles within 0.2% of breakeven
-  AUTO_EXECUTE_THRESHOLD: 0.003,  // 0.3% net before auto-fire
-  MAX_SLIPPAGE_PCT:       0.005,
+  // ── Scanning ─────────────────────────────────────────────────
+  SCAN_INTERVAL_MS:     30_000,   // 30s during market hours
+  PRE_MARKET_SCAN_MS:  120_000,   // 2 min in pre-market
+  CACHE_TTL_MS:    5 * 60 * 1000, // 5 min general cache
 
-  // ── Capital ────────────────────────────────────────────────
-  CAPITAL_PER_TRADE: 9,
+  // ── Candle History ───────────────────────────────────────────
+  DAILY_BARS_LOOKBACK:  30,       // 30 trading days for RVOL avg
+  MINUTE_BARS_LOOKBACK: 390,      // Full day in 1-min bars (6.5h × 60)
 
-  // ── Scanning ───────────────────────────────────────────────
-  SCAN_INTERVAL_MS: 4000,
+  // ── Macro Health Tickers ─────────────────────────────────────
+  SPY_SYMBOL: 'SPY',
+  QQQ_SYMBOL: 'QQQ',
 
-  // ── Cycle analyzer weights (ML scoring) ────────────────────
-  ANALYZER: {
-    MIN_HISTORY:       10,   // Min scans before trusting a score
-    DECAY_FACTOR:      0.92, // Exponential decay — recent data weighted more
-    TOP_CYCLES:        20,   // Top-ranked cycles to prioritize each scan
-    VOLATILITY_WINDOW: 30,   // Recent spread window for volatility calc
-    SCORE_WEIGHTS: {
-      avgSpread:  0.40, // Historical average gross spread
-      hitRate:    0.30, // % of scans that crossed profit threshold
-      volatility: 0.20, // Spread variance — higher = more opportunity
-      recency:    0.10, // How recently this cycle was last profitable
-    },
-  },
+  // ── Market Hours (US Eastern) ────────────────────────────────
+  MARKET_OPEN:  { hour: 9,  minute: 30 },
+  MARKET_CLOSE: { hour: 16, minute: 0  },
+  PRE_MARKET:   { hour: 4,  minute: 0  },
+
+  // ── Display ──────────────────────────────────────────────────
+  MAX_SIGNALS:       10,   // Top N signals to return
+  MAX_RUNNERS:       20,   // Top N runner candidates to track
+
+  // ── Alpaca Data Feed ─────────────────────────────────────────
+  // 'iex' = free tier (IEX exchange subset)
+  // 'sip' = paid consolidated tape
+  DATA_FEED: process.env.ALPACA_FEED || 'iex',
 };

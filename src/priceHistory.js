@@ -1,112 +1,174 @@
 // ─────────────────────────────────────────────────────────────
-// PRICEHISTORY.JS — Fetches & caches OHLCV candle data
-// Uses Binance.US 1h candles. No auth required for market data.
+// PRICEHISTORY.JS — Stock price data via Alpaca Data API v2
+//
+// Endpoints used:
+//   /v2/stocks/most-actives        — discover high-volume stocks
+//   /v2/stocks/snapshots           — current price, VWAP, daily bar
+//   /v2/stocks/{sym}/bars (1Day)   — daily OHLCV for RVOL avg
+//   /v2/stocks/{sym}/bars (1Min)   — intraday data for chart signals
 // ─────────────────────────────────────────────────────────────
 
-import ccxt from 'ccxt';
 import dotenv from 'dotenv';
+import { SETTINGS } from './config.js';
 dotenv.config();
 
-// Public client — no API keys needed for OHLCV
-const exchange = new ccxt.binanceus({
-  enableRateLimit: true,
-  options: { defaultType: 'spot' },
-});
+const DATA_URL = 'https://data.alpaca.markets';
+const FEED     = SETTINGS.DATA_FEED;
 
-// Cache: symbol → { candles, lastFetch }
-const cache = {};
-const CACHE_TTL_MS  = 5 * 60 * 1000;  // Refresh every 5 min — candles only close once per hour
-const CANDLE_LIMIT  = 500;          // 100 × 1h = ~4 days of data
-const TIMEFRAME     = '4h';
+const alpacaHeaders = {
+  'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY    ?? '',
+  'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY ?? '',
+};
 
-// Coins to track (base assets — USDT pairs)
-export const TRACKED_COINS = [
-  'BTC', 'ETH', 'SOL', 'ADA',
-  'DOGE', 'LTC', 'XRP', 'LINK', 'AVAX',
-];
+// ─── Caches ───────────────────────────────────────────────────
+const barCache      = {};  // symbol → { bars, lastFetch }
+const minuteCache   = {};  // symbol → { bars, lastFetch }
+const snapshotCache = {};  // symbol → { data, lastFetch }
+const CACHE_TTL     = SETTINGS.CACHE_TTL_MS;
+const MIN_CACHE_TTL = 60_000;  // 1 min cache for minute bars
 
-// ─── Fetch candles for one symbol ────────────────────────────
-async function fetchCandles(symbol) {
+// ─── Alpaca GET helper ────────────────────────────────────────
+async function alpacaGet(path) {
+  const res = await fetch(`${DATA_URL}${path}`, { headers: alpacaHeaders });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Alpaca ${res.status}: ${txt.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+// ─── Fetch most-active stocks by volume ──────────────────────
+export async function fetchMostActive(top = 100) {
   try {
-    const raw = await exchange.fetchOHLCV(symbol, TIMEFRAME, undefined, CANDLE_LIMIT);
-    // raw: [ [timestamp, open, high, low, close, volume], ... ]
-    return raw.map(([timestamp, open, high, low, close, volume]) => ({
-      timestamp, open, high, low, close, volume,
-    }));
+    const data = await alpacaGet(`/v2/stocks/most-actives?by=volume&top=${top}&feed=${FEED}`);
+    return data.most_actives ?? [];
   } catch (err) {
-    console.error(`[PriceHistory] Failed to fetch ${symbol}:`, err.message);
-    return null;
+    console.error('[PriceHistory] fetchMostActive:', err.message);
+    return [];
   }
 }
 
-// ─── Get candles (with cache) ─────────────────────────────────
-export async function getCandles(symbol) {
+// ─── Fetch snapshots for multiple symbols ─────────────────────
+// Returns { SYMBOL: { price, open, dailyHigh, dailyLow, volume, vwap, prevClose, changePct, ... } }
+export async function fetchSnapshots(symbols) {
+  if (!symbols.length) return {};
   const now = Date.now();
-  const entry = cache[symbol];
 
-  if (entry && now - entry.lastFetch < CACHE_TTL_MS) {
-    return entry.candles;
-  }
+  const uncached = symbols.filter(s => {
+    const e = snapshotCache[s];
+    return !e || now - e.lastFetch >= CACHE_TTL;
+  });
 
-  const candles = await fetchCandles(symbol);
-  if (candles && candles.length > 0) {
-    cache[symbol] = { candles, lastFetch: now };
-    return candles;
-  }
+  if (uncached.length) {
+    try {
+      const data = await alpacaGet(
+        `/v2/stocks/snapshots?symbols=${uncached.join(',')}&feed=${FEED}`
+      );
 
-  // Return stale cache if fetch failed
-  return entry?.candles ?? null;
-}
+      for (const [sym, snap] of Object.entries(data)) {
+        if (!snap) continue;
+        const price     = snap.latestTrade?.p ?? snap.minuteBar?.c ?? 0;
+        const prevClose = snap.prevDailyBar?.c ?? 0;
+        const open      = snap.dailyBar?.o ?? 0;
+        const high      = snap.dailyBar?.h ?? 0;
+        const low       = snap.dailyBar?.l ?? 0;
+        const volume    = snap.dailyBar?.v ?? 0;
+        const vwap      = snap.dailyBar?.vw ?? 0;
+        const changePct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
 
-// Cache for 1h candles (used for pullback entry timing only)
-const cache1h = {};
-
-export async function getCandles1h(symbol) {
-  const now = Date.now();
-  const entry = cache1h[symbol];
-  if (entry && now - entry.lastFetch < CACHE_TTL_MS) return entry.candles;
-
-  try {
-    const raw = await exchange.fetchOHLCV(symbol, '1h', undefined, 50);
-    const candles = raw.map(([timestamp, open, high, low, close, volume]) => ({
-      timestamp, open, high, low, close, volume,
-    }));
-    cache1h[symbol] = { candles, lastFetch: now };
-    return candles;
-  } catch {
-    return entry?.candles ?? null;
-  }
-}
-
-// ─── Refresh all tracked coins ────────────────────────────────
-export async function refreshAll() {
-  const results = {};
-  await Promise.all(
-    TRACKED_COINS.map(async (coin) => {
-      const symbol  = `${coin}/USDT`;
-      const candles = await getCandles(symbol);
-      if (candles) {
-        results[coin] = candles;
-        console.log(`[PriceHistory] ${coin}: ${candles.length} candles loaded`);
+        snapshotCache[sym] = {
+          lastFetch: now,
+          data: {
+            symbol:    sym,
+            price:     +price.toFixed(4),
+            open:      +open.toFixed(4),
+            dailyHigh: +high.toFixed(4),
+            dailyLow:  +low.toFixed(4),
+            volume,
+            vwap:      +vwap.toFixed(4),
+            prevClose: +prevClose.toFixed(4),
+            changePct: +changePct.toFixed(2),
+            bid:       snap.latestQuote?.bp ?? price,
+            ask:       snap.latestQuote?.ap ?? price,
+            timestamp: now,
+          },
+        };
       }
-    })
-  );
-  return results;
-}
+    } catch (err) {
+      console.error('[PriceHistory] fetchSnapshots:', err.message);
+    }
+  }
 
-// ─── Get latest price from cache ─────────────────────────────
-export function getLatestPrice(coin) {
-  const entry = cache[`${coin}/USDT`];
-  if (!entry?.candles?.length) return null;
-  return entry.candles[entry.candles.length - 1].close;
-}
-
-// ─── Get all cached candles ───────────────────────────────────
-export function getAllCached() {
   const result = {};
-  for (const [symbol, entry] of Object.entries(cache)) {
-    const coin = symbol.replace('/USDT', '');
-    result[coin] = entry.candles;
+  for (const s of symbols) {
+    if (snapshotCache[s]) result[s] = snapshotCache[s].data;
   }
   return result;
+}
+
+export async function fetchSnapshot(symbol) {
+  const snaps = await fetchSnapshots([symbol]);
+  return snaps[symbol] ?? null;
+}
+
+// ─── Fetch daily bars (for RVOL average + trend) ──────────────
+export async function fetchDailyBars(symbol, days = 30) {
+  const now = Date.now();
+  const cached = barCache[symbol];
+  if (cached && now - cached.lastFetch < CACHE_TTL) return cached.bars;
+
+  try {
+    const data = await alpacaGet(
+      `/v2/stocks/${symbol}/bars?timeframe=1Day&limit=${days + 1}&feed=${FEED}&sort=asc`
+    );
+    const bars = (data.bars ?? []).map(b => ({
+      timestamp: new Date(b.t).getTime(),
+      open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
+      vwap: b.vw ?? 0,
+    }));
+    barCache[symbol] = { bars, lastFetch: now };
+    return bars;
+  } catch (err) {
+    console.error(`[PriceHistory] fetchDailyBars ${symbol}:`, err.message);
+    return barCache[symbol]?.bars ?? [];
+  }
+}
+
+// ─── Fetch intraday minute bars ───────────────────────────────
+export async function fetchMinuteBars(symbol, minutes = 390) {
+  const now = Date.now();
+  const cached = minuteCache[symbol];
+  if (cached && now - cached.lastFetch < MIN_CACHE_TTL) return cached.bars;
+
+  try {
+    const data = await alpacaGet(
+      `/v2/stocks/${symbol}/bars?timeframe=1Min&limit=${minutes}&feed=${FEED}&sort=asc`
+    );
+    const bars = (data.bars ?? []).map(b => ({
+      timestamp: new Date(b.t).getTime(),
+      open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
+      vwap: b.vw ?? 0,
+    }));
+    minuteCache[symbol] = { bars, lastFetch: now };
+    return bars;
+  } catch (err) {
+    console.error(`[PriceHistory] fetchMinuteBars ${symbol}:`, err.message);
+    return minuteCache[symbol]?.bars ?? [];
+  }
+}
+
+// ─── Calculate RVOL from history + today's volume ─────────────
+// Uses 20-day average (excluding today) as baseline
+export function calculateRvol(todayVolume, dailyBars) {
+  if (!dailyBars || dailyBars.length < 5) return 1.0;
+  const hist = dailyBars.slice(-21, -1);   // Exclude today's bar
+  if (!hist.length) return 1.0;
+  const avg = hist.reduce((s, b) => s + b.volume, 0) / hist.length;
+  if (avg === 0) return 1.0;
+  return +(todayVolume / avg).toFixed(2);
+}
+
+// ─── Latest cached daily bars for a symbol ───────────────────
+export function getCachedDailyBars(symbol) {
+  return barCache[symbol]?.bars ?? [];
 }

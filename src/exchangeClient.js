@@ -1,270 +1,190 @@
 // ─────────────────────────────────────────────────────────────
-// EXCHANGECLIENT.JS — Exchange connections + arb detection
+// EXCHANGECLIENT.JS — Alpaca broker client (trading + account)
 // Server-side only. Do NOT import from frontend.
+//
+// Uses the Alpaca Trading API v2 for order placement, account
+// info, and position management. Market data lives in
+// priceHistory.js. Paper trading by default.
 // ─────────────────────────────────────────────────────────────
 
-import ccxt from 'ccxt';
 import dotenv from 'dotenv';
 import { SETTINGS } from './config.js';
-import { initCycles, getRankedCycles, recordScan, getTopCycles, getHourlyActivity } from './cycleAnalyzer.js';
 
 dotenv.config();
 
-const BINANCEUS_API_KEY = process.env.BINANCE_API_KEY;
-const BINANCEUS_SECRET  = process.env.BINANCE_SECRET_KEY;
-const COINBASE_API_KEY  = process.env.COINBASE_API_KEY;
-const COINBASE_SECRET   = process.env.COINBASE_SECRET_KEY;
-const KRAKEN_API_KEY    = process.env.KRAKEN_API_KEY;
-const KRAKEN_SECRET     = process.env.KRAKEN_SECRET_KEY;
+const PAPER       = SETTINGS.PAPER_TRADING;
+const TRADING_URL = PAPER
+  ? 'https://paper-api.alpaca.markets'
+  : 'https://api.alpaca.markets';
 
-console.log('🔐 Checking API keys:');
-console.log(`  Binance.US: ${BINANCEUS_API_KEY ? '✅ Loaded' : '❌ Missing'}`);
-console.log(`  Coinbase:   ${COINBASE_API_KEY  ? '✅ Loaded' : '❌ Missing'}`);
-console.log(`  Kraken:     ${KRAKEN_API_KEY    ? '✅ Loaded' : '❌ Missing'}`);
+const ALPACA_API_KEY    = process.env.ALPACA_API_KEY;
+const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
 
-// ─── Initialize exchanges ─────────────────────────────────────
-const exchangeConfigs = {
-  BinanceUS: { class: ccxt.binanceus, apiKey: BINANCEUS_API_KEY, secret: BINANCEUS_SECRET },
-  Coinbase:  { class: ccxt.coinbase,  apiKey: COINBASE_API_KEY,  secret: COINBASE_SECRET  },
-  Kraken:    { class: ccxt.kraken,    apiKey: KRAKEN_API_KEY,    secret: KRAKEN_SECRET    },
+console.log('🔐 Checking Alpaca credentials:');
+console.log(`  API Key:    ${ALPACA_API_KEY ? '✅ Loaded' : '❌ Missing'}`);
+console.log(`  Secret:     ${ALPACA_SECRET_KEY ? '✅ Loaded' : '❌ Missing'}`);
+console.log(`  Mode:       ${PAPER ? '📝 PAPER TRADING' : '🔴 LIVE TRADING'}`);
+
+const headers = {
+  'APCA-API-KEY-ID':     ALPACA_API_KEY    ?? '',
+  'APCA-API-SECRET-KEY': ALPACA_SECRET_KEY ?? '',
+  'Content-Type':        'application/json',
 };
 
-const exchanges = {};
-for (const [name, cfg] of Object.entries(exchangeConfigs)) {
-  if (cfg.apiKey) {
-    try {
-      exchanges[name] = new cfg.class({
-        apiKey: cfg.apiKey, secret: cfg.secret,
-        enableRateLimit: true, options: { defaultType: 'spot' },
-      });
-      console.log(`✅ ${name} initialized`);
-    } catch (err) {
-      console.error(`❌ ${name} init failed:`, err.message);
-    }
-  } else {
-    console.log(`⚠️  ${name} disabled — no API keys`);
+// ─── Alpaca request helpers ───────────────────────────────────
+async function alpacaRequest(method, path, body = null) {
+  const opts = { method, headers };
+  if (body) opts.body = JSON.stringify(body);
+
+  const res = await fetch(`${TRADING_URL}${path}`, opts);
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; }
+  catch { data = { raw: text }; }
+
+  if (!res.ok) {
+    throw new Error(`Alpaca ${res.status}: ${data.message ?? text.slice(0, 200)}`);
   }
+  return data;
 }
 
-// ─── Bootstrap triangular cycles once Binance.US is ready ────
-let triCyclesReady = false;
-
-async function bootstrapTriangularCycles() {
-  const ex = exchanges[SETTINGS.TRIANGULAR_EXCHANGE];
-  if (!ex) {
-    console.log('⚠️  Triangular arb disabled — BinanceUS not initialized');
-    return;
-  }
+// ─── Account ──────────────────────────────────────────────────
+export async function getAccount() {
   try {
-    console.log('🔺 Loading Binance.US markets for cycle generation...');
-    await ex.loadMarkets();
-    const available = Object.keys(ex.markets);
-    initCycles(available);
-    triCyclesReady = true;
-    console.log(`✅ Triangular cycles ready`);
+    return await alpacaRequest('GET', '/v2/account');
   } catch (err) {
-    console.error('❌ Failed to load markets for cycle generation:', err.message);
+    console.error('[Broker] getAccount:', err.message);
+    return null;
   }
 }
 
-bootstrapTriangularCycles();
-
-// ─── Fetch cross-exchange prices ──────────────────────────────
-// Uses ARB_EXCHANGES only (excludes Coinbase) for opportunity detection.
-// Still fetches Coinbase for balance display via /api/balances.
-export async function fetchRealPrices(pairs = SETTINGS.PAIRS, exchangeNames = SETTINGS.ARB_EXCHANGES) {
-  const prices = {};
-  pairs.forEach(pair => { prices[pair] = {}; });
-
-  await Promise.all(
-    exchangeNames.map(async (name) => {
-      const ex = exchanges[name];
-      if (!ex) return;
-      // Fetch all pairs for this exchange in parallel
-      await Promise.all(
-        pairs.map(async (pair) => {
-          try {
-            const ob = await ex.fetchOrderBook(pair, 5);
-            prices[pair][name] = {
-              bid: ob.bids[0]?.[0] ?? 0,
-              ask: ob.asks[0]?.[0] ?? 0,
-              bidVol: ob.bids[0]?.[1] ?? 0,
-              askVol: ob.asks[0]?.[1] ?? 0,
-              timestamp: Date.now(),
-            };
-          } catch {
-            prices[pair][name] = { bid: 0, ask: 0, error: true };
-          }
-        })
-      );
-      console.log(`📊 ${name}: fetched ${pairs.length} pairs`);
-    })
-  );
-
-  return prices;
+export async function getBuyingPower() {
+  const account = await getAccount();
+  return account ? parseFloat(account.buying_power) : 0;
 }
 
-// ─── Detect cross-exchange opportunities ─────────────────────
-export function detectOpportunities(prices) {
-  const opps = [];
-  const { FEES, WITHDRAWAL_FEES, MIN_PROFIT_THRESHOLD, ARB_EXCHANGES } = SETTINGS;
-
-  for (const [pair, exPrices] of Object.entries(prices)) {
-    for (const buyEx of ARB_EXCHANGES) {
-      for (const sellEx of ARB_EXCHANGES) {
-        if (buyEx === sellEx) continue;
-        const ask = exPrices[buyEx]?.ask;
-        const bid = exPrices[sellEx]?.bid;
-        if (!ask || !bid || ask <= 0 || bid <= 0) continue;
-        if (exPrices[buyEx]?.error || exPrices[sellEx]?.error) continue;
-
-        const grossProfit = (bid - ask) / ask;
-        const totalFees   = FEES[buyEx] + FEES[sellEx] + WITHDRAWAL_FEES[buyEx];
-        const netProfit   = grossProfit - totalFees;
-
-        if (netProfit > MIN_PROFIT_THRESHOLD) {
-          opps.push({
-            type: 'cross',
-            pair, buyEx, sellEx, ask, bid,
-            grossPct: +(grossProfit * 100).toFixed(4),
-            netPct:   +(netProfit   * 100).toFixed(4),
-            feesPct:  +(totalFees   * 100).toFixed(4),
-            timestamp: Date.now(),
-          });
-        }
-      }
-    }
-  }
-
-  return opps.sort((a, b) => b.netPct - a.netPct).slice(0, 10);
+export async function getCash() {
+  const account = await getAccount();
+  return account ? parseFloat(account.cash) : 0;
 }
 
-// ─── Scan triangular cycles ───────────────────────────────────
-// Fetches ticker data for all unique pairs in ranked cycles,
-// computes the 3-leg cycle profit, records results in cycleAnalyzer.
-export async function scanTriangularCycles() {
-  if (!triCyclesReady) return [];
-
-  const ex = exchanges[SETTINGS.TRIANGULAR_EXCHANGE];
-  if (!ex) return [];
-
-  const cycles       = getRankedCycles();
-  const fee          = SETTINGS.FEES[SETTINGS.TRIANGULAR_EXCHANGE];
-  const threshold    = SETTINGS.MIN_PROFIT_THRESHOLD;
-  const opportunities = [];
-
-  // Collect all unique pairs needed across all cycles
-  const uniquePairs = [...new Set(cycles.flatMap(c => c.pairs))];
-
-  // Fetch all tickers in one batch call (much faster than per-pair)
-  let tickers = {};
+// ─── Positions ────────────────────────────────────────────────
+export async function getPositions() {
   try {
-    // fetchTickers with a list is faster than N individual calls
-    const raw = await ex.fetchTickers(uniquePairs);
-    tickers = raw;
+    return await alpacaRequest('GET', '/v2/positions');
+  } catch (err) {
+    console.error('[Broker] getPositions:', err.message);
+    return [];
+  }
+}
+
+export async function getPosition(symbol) {
+  try {
+    return await alpacaRequest('GET', `/v2/positions/${symbol}`);
   } catch {
-    // Fallback: fetch individually if batch not supported
-    await Promise.all(
-      uniquePairs.map(async (pair) => {
-        try {
-          tickers[pair] = await ex.fetchTicker(pair);
-        } catch {
-          tickers[pair] = null;
-        }
-      })
-    );
+    return null;  // No position
   }
-
-  for (const cycle of cycles) {
-    const [p1, p2, p3] = cycle.pairs;
-    const t1 = tickers[p1];
-    const t2 = tickers[p2];
-    const t3 = tickers[p3];
-
-    if (!t1?.ask || !t2?.ask || !t3?.bid) continue;
-    if (t1.ask <= 0 || t2.ask <= 0 || t3.bid <= 0) continue;
-
-    // Simulate the 3-leg cycle with $1 of USDT:
-    //   Step 1: Buy A with USDT → spend ask1, get (1/ask1) units of A
-    //   Step 2: Buy B with A   → spend ask2, get (1/ask1/ask2) units of B
-    //   Step 3: Sell B for USDT → receive bid3 per B
-    // End USDT = (1 / ask1 / ask2) * bid3
-    const unitsA = 1 / t1.ask;
-    const unitsB = cycle.direction === 'forward'
-      ? unitsA / t2.ask
-      : unitsA * t2.bid;
-    const endUsdt     = unitsB * t3.bid;
-    const grossProfit = endUsdt - 1;
-    const totalFees   = fee * 3;
-    const netProfit   = grossProfit - totalFees;
-
-    console.log(`🔺 ${cycle.id} | gross: ${(grossProfit*100).toFixed(4)}% | net: ${(netProfit*100).toFixed(4)}%`);
-    const wasHit = netProfit > threshold;
-    recordScan(cycle.id, grossProfit, wasHit);
-
-    if (wasHit) {
-      opportunities.push({
-        type:      'triangular',
-        id:        cycle.id,
-        exchange:  SETTINGS.TRIANGULAR_EXCHANGE,
-        pairs:     cycle.pairs,
-        prices:    [t1.ask, t2.ask, t3.bid],
-        grossPct:  +(grossProfit * 100).toFixed(4),
-        netPct:    +(netProfit   * 100).toFixed(4),
-        feesPct:   +(totalFees   * 100).toFixed(4),
-        timestamp: Date.now(),
-      });
-    }
-  }
-
-  return opportunities.sort((a, b) => b.netPct - a.netPct).slice(0, 10);
 }
 
-// ─── Get cycle intelligence (for dashboard) ──────────────────
-export function getCycleIntelligence() {
-  return {
-    topCycles:      getTopCycles(15),
-    hourlyActivity: getHourlyActivity(),
+// ─── Orders ───────────────────────────────────────────────────
+
+// Place a bracket order: entry + take-profit + stop-loss in one shot.
+// This is the safest way to trade penny stocks — exits are pre-set
+// the moment the entry fills, so a fast reversal can't wipe the gain.
+export async function placeBracketOrder({ symbol, qty, entryPrice, takeProfit, stopLoss, type = 'limit' }) {
+  const order = {
+    symbol,
+    qty:  String(qty),
+    side: 'buy',
+    type,                          // 'limit' or 'market'
+    time_in_force: 'day',          // Penny stock plays are intraday
+    order_class: 'bracket',
+    take_profit: { limit_price: String(takeProfit) },
+    stop_loss:   { stop_price:  String(stopLoss) },
   };
+  if (type === 'limit') order.limit_price = String(entryPrice);
+
+  return alpacaRequest('POST', '/v2/orders', order);
 }
 
-// ─── Balance ─────────────────────────────────────────────────
-export async function getBalance(exchangeName, currency = 'USDT') {
-  const ex = exchanges[exchangeName];
-  if (!ex) return 0;
+// Simple market/limit order (no bracket)
+export async function placeOrder(symbol, side, qty, type = 'market', limitPrice = null) {
+  const order = {
+    symbol,
+    qty:  String(qty),
+    side,
+    type,
+    time_in_force: 'day',
+  };
+  if (type === 'limit' && limitPrice) order.limit_price = String(limitPrice);
+
+  const result = await alpacaRequest('POST', '/v2/orders', order);
+  return { success: true, orderId: result.id, symbol, side, qty, status: result.status };
+}
+
+// Close an entire position at market
+export async function closePosition(symbol) {
   try {
-    const bal = await ex.fetchBalance();
-    return bal[currency]?.free ?? 0;
+    return await alpacaRequest('DELETE', `/v2/positions/${symbol}`);
   } catch (err) {
-    console.error(`Balance failed ${exchangeName}:`, err.message);
-    return 0;
+    throw new Error(`Failed to close ${symbol}: ${err.message}`);
   }
 }
 
-// ─── Place limit order ────────────────────────────────────────
-export async function placeLimitOrder(exchangeName, pair, side, amount, price) {
-  const ex = exchanges[exchangeName];
-  if (!ex) throw new Error(`${exchangeName} not initialized`);
-  const order = await ex.createLimitOrder(pair, side, amount, price);
-  return { success: true, orderId: order.id, exchange: exchangeName, side, amount, price, status: order.status };
+// Cancel all open orders (used by emergency stop)
+export async function cancelAllOrders() {
+  try {
+    return await alpacaRequest('DELETE', '/v2/orders');
+  } catch (err) {
+    console.error('[Broker] cancelAllOrders:', err.message);
+    return [];
+  }
 }
 
-// ─── Test connection ──────────────────────────────────────────
-export async function testConnection(exchangeName) {
-  const ex = exchanges[exchangeName];
-  if (!ex) return { success: false, error: 'Not initialized' };
+// Liquidate everything — emergency
+export async function closeAllPositions() {
   try {
-    const bal = await ex.fetchBalance();
-    return { success: true, balance: bal.total?.USDT ?? 0 };
+    return await alpacaRequest('DELETE', '/v2/positions?cancel_orders=true');
+  } catch (err) {
+    console.error('[Broker] closeAllPositions:', err.message);
+    return [];
+  }
+}
+
+// ─── Market clock ─────────────────────────────────────────────
+export async function getMarketClock() {
+  try {
+    return await alpacaRequest('GET', '/v2/clock');
+  } catch (err) {
+    console.error('[Broker] getMarketClock:', err.message);
+    return { is_open: false };
+  }
+}
+
+export async function isMarketOpen() {
+  const clock = await getMarketClock();
+  return clock?.is_open ?? false;
+}
+
+// ─── Connection test ──────────────────────────────────────────
+export async function testConnection() {
+  try {
+    const account = await getAccount();
+    if (!account) return { success: false, error: 'No account returned' };
+    return {
+      success:      true,
+      accountId:    account.id,
+      buyingPower:  parseFloat(account.buying_power),
+      cash:         parseFloat(account.cash),
+      portfolioValue: parseFloat(account.portfolio_value),
+      status:       account.status,
+      paper:        PAPER,
+    };
   } catch (err) {
     return { success: false, error: err.message };
   }
 }
 
-export function getAvailableExchanges() {
-  return Object.keys(exchanges);
-}
-
-export function getExchanges() {
-  return exchanges;
+export function getBrokerInfo() {
+  return { broker: 'Alpaca', paper: PAPER, tradingUrl: TRADING_URL };
 }

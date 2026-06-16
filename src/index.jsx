@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// INDEX.JSX — ArbitrageAI + Quant Dashboard
+// INDEX.JSX — Penny Stock Runner Dashboard
 // ─────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -23,6 +23,7 @@ const Badge = ({ color, children }) => {
     orange: 'bg-orange-500/15 text-orange-400 border border-orange-500/30',
     gray:   'bg-gray-500/15 text-gray-400 border border-gray-500/30',
     cyan:   'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30',
+    pink:   'bg-pink-500/15 text-pink-400 border border-pink-500/30',
   };
   return <span className={`px-2 py-0.5 rounded text-xs font-mono ${map[color] || map.gray}`}>{children}</span>;
 };
@@ -32,6 +33,7 @@ const StatCard = ({ label, value, sub, color }) => {
           : color === 'red'   ? 'text-red-400'
           : color === 'yellow'? 'text-amber-400'
           : color === 'cyan'  ? 'text-cyan-400'
+          : color === 'pink'  ? 'text-pink-400'
           : 'text-white';
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -42,125 +44,72 @@ const StatCard = ({ label, value, sub, color }) => {
   );
 };
 
-const RegimeBadge = ({ regime }) => {
-  const map = {
-    TRENDING_UP:   { color: 'green',  label: '↑ Trend Up'   },
-    TRENDING_DOWN: { color: 'red',    label: '↓ Trend Down' },
-    RANGING:       { color: 'blue',   label: '↔ Ranging'    },
-    VOLATILE:      { color: 'yellow', label: '⚡ Volatile'   },
-  };
-  const r = map[regime] || { color: 'gray', label: regime || '?' };
-  return <Badge color={r.color}>{r.label}</Badge>;
+const STRATEGY_LABELS = {
+  volume_surge:           { color: 'green',  label: '📈 VOL SURGE' },
+  short_squeeze:          { color: 'pink',   label: '🩳 SQUEEZE' },
+  vwap_reclaim:           { color: 'blue',   label: '↗ VWAP' },
+  opening_range_breakout: { color: 'orange', label: '🚀 ORB' },
+  news_catalyst:          { color: 'purple', label: '📰 NEWS' },
 };
 
-// ─── Arb opportunity card ─────────────────────────────────────
-const ArbCard = ({ opp, index, onExecute, realMoneyMode, capitalPerTrade }) => {
-  const isTri = opp.type === 'triangular';
-  return (
-    <div className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-4 transition-colors">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-600 text-xs w-5">#{index + 1}</span>
-          <Badge color={isTri ? 'orange' : 'blue'}>{isTri ? '🔺 TRI' : '↔ CROSS'}</Badge>
-          {isTri
-            ? <span className="text-gray-300 text-xs font-mono">{opp.pairs?.join(' → ')}</span>
-            : <><Badge color="blue">{opp.pair}</Badge>
-               <span className="text-gray-400 text-xs">{opp.buyEx} → {opp.sellEx}</span></>
-          }
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge color="green">+{opp.netPct}% net</Badge>
-          <Badge color="gray">{opp.grossPct}% gross</Badge>
-          <Badge color="red">-{opp.feesPct}% fees</Badge>
-        </div>
-      </div>
-      <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-gray-500">
-        {isTri
-          ? <><span>Prices: <span className="text-white">{opp.prices?.map(p => `$${p}`).join(' / ')}</span></span>
-               <span>Exchange: <span className="text-white">{opp.exchange}</span></span></>
-          : <><span>Buy: <span className="text-white">${opp.ask?.toLocaleString()}</span></span>
-               <span>Sell: <span className="text-white">${opp.bid?.toLocaleString()}</span></span></>
-        }
-        <span>Capital: <span className="text-white">${capitalPerTrade ?? 9}</span></span>
-        <span>Est. profit: <span className="text-emerald-400">
-          +${((opp.netPct / 100) * (capitalPerTrade ?? 9)).toFixed(4)}
-        </span></span>
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <button onClick={() => onExecute(opp)}
-          className={`px-3 py-1 rounded text-xs transition-colors ${
-            realMoneyMode
-              ? 'bg-red-600/20 hover:bg-red-600/40 border border-red-600/40 text-red-400'
-              : 'bg-violet-600/20 hover:bg-violet-600/40 border border-violet-600/40 text-violet-400'
-          }`}>
-          {realMoneyMode ? '⚠️ Execute Real Trade' : '🔍 Simulate'}
-        </button>
-        <span className="text-gray-700 text-xs">{new Date(opp.timestamp).toLocaleTimeString()}</span>
-      </div>
-    </div>
-  );
+const TierBadge = ({ tier }) => {
+  const map = {
+    STRONG_BUY: { color: 'green',  label: '★ STRONG BUY' },
+    BUY:        { color: 'cyan',   label: 'BUY' },
+    WATCH:      { color: 'yellow', label: '👁 WATCH' },
+    HIGH:       { color: 'green',  label: 'HIGH' },
+    MEDIUM:     { color: 'yellow', label: 'MED' },
+    LOW:        { color: 'gray',   label: 'LOW' },
+  };
+  const r = map[tier] || { color: 'gray', label: tier };
+  return <Badge color={r.color}>{r.label}</Badge>;
 };
 
 // ─── Signal card ──────────────────────────────────────────────
 const SignalCard = ({ signal, index, onExecute, realMoneyMode }) => {
-  const isPairs  = signal.strategy === 'pairs_trading';
-  const isHold   = signal.type === 'HOLD';
-  const isBuy    = signal.type === 'BUY';
-  const confHigh = signal.confidence >= 0.65;
-  const border   = isHold ? 'border-gray-800' : isBuy ? 'border-emerald-800/60' : 'border-red-800/60';
+  const strat = STRATEGY_LABELS[signal.strategy] || { color: 'gray', label: signal.strategy };
+  const confHigh = signal.confidence >= 0.75;
+  const border = signal.gated ? 'border-gray-800 opacity-60' : confHigh ? 'border-emerald-700/60' : 'border-gray-700';
 
   return (
-    <div className={`bg-gray-900 border ${border} hover:border-gray-600 rounded-xl p-4 transition-colors`}>
+    <div className={`bg-gray-900 border ${border} hover:border-gray-500 rounded-xl p-4 transition-colors`}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <span className="text-gray-600 text-xs w-5">#{index + 1}</span>
-          <Badge color={
-            signal.strategy === 'mean_reversion'   ? 'blue'   :
-            signal.strategy === 'trend_following'  ? 'green'  :
-            signal.strategy === 'pairs_trading'    ? 'purple' : 'gray'
-          }>
-            {signal.strategy === 'mean_reversion'  ? '↩ MR'    :
-             signal.strategy === 'trend_following' ? '→ TREND' :
-             signal.strategy === 'pairs_trading'   ? '⚖ PAIRS' : signal.strategy}
-          </Badge>
-          <span className="text-white text-xs font-mono font-bold">
-            {isPairs ? signal.pair : signal.coin}
-          </span>
-          <Badge color={isBuy ? 'green' : isHold ? 'gray' : 'red'}>{signal.type}</Badge>
-          {signal.regime && <RegimeBadge regime={signal.regime} />}
+          <span className="text-white text-sm font-mono font-bold">{signal.symbol}</span>
+          <Badge color={strat.color}>{strat.label}</Badge>
+          {signal.tier && <TierBadge tier={signal.tier} />}
+          {signal.squeezeIntensity && signal.squeezeIntensity !== 'LOW' && (
+            <Badge color="pink">🔥 {signal.squeezeIntensity} SQUEEZE</Badge>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <Badge color={confHigh ? 'green' : 'yellow'}>
-            {(signal.confidence * 100).toFixed(0)}% conf
-          </Badge>
+          <Badge color={confHigh ? 'green' : 'yellow'}>{(signal.confidence * 100).toFixed(0)}% conf</Badge>
           <span className="text-gray-600 text-xs">{new Date(signal.timestamp).toLocaleTimeString()}</span>
         </div>
       </div>
 
-      {/* Indicator readings */}
-      {signal.indicators && (
-        <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-500">
-          {signal.indicators.rsi      != null && (
-            <span>RSI <span className={signal.indicators.rsi < 35 ? 'text-emerald-400' : signal.indicators.rsi > 65 ? 'text-red-400' : 'text-white'}>
-              {signal.indicators.rsi}
-            </span></span>
-          )}
-          {signal.indicators.bbPctB   != null && <span>BB% <span className="text-white">{signal.indicators.bbPctB}</span></span>}
-          {signal.indicators.macdHist != null && (
-            <span>MACD <span className={signal.indicators.macdHist > 0 ? 'text-emerald-400' : 'text-red-400'}>
-              {signal.indicators.macdHist > 0 ? '▲' : '▼'} {signal.indicators.macdHist}
-            </span></span>
-          )}
-          {signal.indicators.volRatio != null && <span>Vol <span className={signal.indicators.volRatio > 1.5 ? 'text-amber-400' : 'text-white'}>{signal.indicators.volRatio}x</span></span>}
-          {signal.price               != null && <span>Price <span className="text-white">${signal.price?.toLocaleString()}</span></span>}
+      {/* Metrics row */}
+      <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-500">
+        {signal.price     != null && <span>Price <span className="text-white">${signal.price?.toFixed(3)}</span></span>}
+        {signal.rvol      != null && <span>RVOL <span className="text-amber-400">{signal.rvol}x</span></span>}
+        {signal.changePct != null && <span>Chg <span className={signal.changePct >= 0 ? 'text-emerald-400' : 'text-red-400'}>{signal.changePct >= 0 ? '+' : ''}{signal.changePct?.toFixed(1)}%</span></span>}
+        {signal.vwap      ? <span>VWAP <span className="text-white">${signal.vwap?.toFixed(3)}</span></span> : null}
+        {signal.volume    != null && <span>Vol <span className="text-white">{(signal.volume / 1e6).toFixed(1)}M</span></span>}
+      </div>
+
+      {/* Squeeze score */}
+      {signal.squeezeScore != null && (
+        <div className="mt-2 text-xs text-gray-500">
+          Squeeze pressure: <span className="text-pink-400 font-bold">{(signal.squeezeScore * 100).toFixed(0)}/100</span>
+          <span className="ml-2 text-gray-600">({signal.squeezeIntensity})</span>
         </div>
       )}
 
-      {/* Pairs trading z-score */}
-      {isPairs && signal.zScore != null && (
-        <div className="mt-2 text-xs text-gray-500">
-          Z-Score: <span className={Math.abs(signal.zScore) > 2.5 ? 'text-amber-400' : 'text-white'}>{signal.zScore}</span>
-          <span className="ml-3 text-gray-600">{signal.action}</span>
+      {/* News headline */}
+      {signal.topHeadline && (
+        <div className="mt-2 text-xs text-violet-300 bg-violet-500/5 border border-violet-500/20 rounded px-2 py-1">
+          📰 {signal.topHeadline} <span className="text-gray-600">— {signal.topSource}</span>
         </div>
       )}
 
@@ -168,7 +117,7 @@ const SignalCard = ({ signal, index, onExecute, realMoneyMode }) => {
       {signal.reasons?.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {signal.reasons.map((r, i) => (
-            <span key={i} className="text-gray-600 text-xs bg-gray-800 px-2 py-0.5 rounded">{r}</span>
+            <span key={i} className="text-gray-500 text-xs bg-gray-800 px-2 py-0.5 rounded">{r}</span>
           ))}
         </div>
       )}
@@ -176,13 +125,18 @@ const SignalCard = ({ signal, index, onExecute, realMoneyMode }) => {
       {/* TP/SL */}
       {(signal.takeProfit || signal.stopLoss) && (
         <div className="mt-2 flex gap-4 text-xs">
-          {signal.takeProfit && <span className="text-gray-500">TP: <span className="text-emerald-400">${signal.takeProfit?.toLocaleString()}</span></span>}
-          {signal.stopLoss   && <span className="text-gray-500">SL: <span className="text-red-400">${signal.stopLoss?.toLocaleString()}</span></span>}
+          {signal.stopLoss   && <span className="text-gray-500">SL <span className="text-red-400">${signal.stopLoss?.toFixed(3)}</span></span>}
+          {signal.takeProfit && <span className="text-gray-500">TP <span className="text-emerald-400">${signal.takeProfit?.toFixed(3)}</span></span>}
+          {signal.takeProfitAggressive && <span className="text-gray-500">TP+ <span className="text-emerald-300">${signal.takeProfitAggressive?.toFixed(3)}</span></span>}
         </div>
       )}
 
-      {/* Execute button — only for BUY signals with high confidence */}
-      {isBuy && !isPairs && confHigh && (
+      {signal.gated && (
+        <div className="mt-2 text-xs text-amber-400">⏸ Gated: {signal.gateReason}</div>
+      )}
+
+      {/* Execute */}
+      {!signal.gated && (
         <div className="mt-3">
           <button onClick={() => onExecute(signal)}
             className={`px-3 py-1 rounded text-xs transition-colors ${
@@ -198,421 +152,196 @@ const SignalCard = ({ signal, index, onExecute, realMoneyMode }) => {
   );
 };
 
-// ─── Quant tab ────────────────────────────────────────────────
-const QuantTab = ({ quantData, onExecute, realMoneyMode }) => {
-  if (!quantData) return (
-    <div className="text-center text-gray-600 py-16">
-      Press <span className="text-cyan-400">Start</span> to begin quant scanning
-    </div>
-  );
-
-  const { signals = [], regimes = {}, openPositions = [], stats = {}, coinsScanned } = quantData;
-  const actionable = signals.filter(s => s.type === 'BUY' || s.type === 'SELL');
-  const hold       = signals.filter(s => s.type === 'HOLD');
-
+// ─── Runner card ──────────────────────────────────────────────
+const RunnerCard = ({ runner }) => {
+  const s = runner.score;
   return (
-    <div className="space-y-6">
-      {/* Regime overview grid */}
-      <div>
-        <p className="text-gray-500 text-xs uppercase tracking-wide mb-3">Market Regimes — {coinsScanned} coins</p>
-        <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
-          {Object.entries(regimes).map(([coin, r]) => (
-            <div key={coin} className="bg-gray-900 border border-gray-800 rounded-lg p-2 text-center">
-              <p className="text-white text-xs font-mono font-bold">{coin}</p>
-              <div className="mt-1 flex justify-center"><RegimeBadge regime={r.regime} /></div>
-              <p className="text-gray-600 text-xs mt-1">ADX {r.adx}</p>
-            </div>
-          ))}
+    <div className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-3 transition-colors">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-white text-sm font-mono font-bold">{runner.symbol}</span>
+          <TierBadge tier={runner.tier} />
+          <Badge color="gray">score {(s.total * 100).toFixed(0)}</Badge>
+          {runner.squeeze?.isSqueezePlay && runner.squeeze.intensity !== 'LOW' && (
+            <Badge color="pink">🔥 {runner.squeeze.intensity}</Badge>
+          )}
+          {runner.news?.hasCatalyst && <Badge color="purple">📰 {runner.news.catalysts[0]?.label}</Badge>}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span>${runner.price?.toFixed(3)}</span>
+          <span className="text-amber-400">{runner.rvol}x RVOL</span>
+          <span className={runner.changePct >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+            {runner.changePct >= 0 ? '+' : ''}{runner.changePct?.toFixed(1)}%
+          </span>
         </div>
       </div>
-
-      {/* Stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Quant Trades"  value={stats.trades ?? 0}    sub="Executed"                color="cyan" />
-        <StatCard label="Win Rate"      value={stats.winRate ? `${stats.winRate}%` : '—'} sub="Signal accuracy" color={stats.winRate >= 60 ? 'green' : stats.trades > 0 ? 'red' : 'yellow'} />
-        <StatCard label="Total P&L"     value={`${(stats.totalPnl ?? 0) >= 0 ? '+' : ''}$${(stats.totalPnl ?? 0).toFixed(4)}`} color={(stats.totalPnl ?? 0) >= 0 ? 'green' : 'red'} />
-        <StatCard label="Open Positions" value={openPositions.length} sub="Active trades"           color={openPositions.length > 0 ? 'yellow' : 'gray'} />
-      </div>
-
-      {/* Open positions */}
-      {openPositions.length > 0 && (
-        <div>
-          <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Open Positions</p>
-          <div className="space-y-2">
-            {openPositions.map((pos, i) => {
-              const ageMins = Math.round((Date.now() - pos.openedAt) / 60000);
-              return (
-                <div key={i} className="bg-gray-900 border border-amber-800/40 rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <Badge color="yellow">OPEN</Badge>
-                    <span className="text-white text-xs font-mono">{pos.coin}/USDT</span>
-                    <Badge color="gray">{pos.strategy}</Badge>
-                  </div>
-                  <div className="flex gap-3 text-xs text-gray-500">
-                    <span>Entry: <span className="text-white">${pos.entryPrice}</span></span>
-                    <span>Size: <span className="text-white">${pos.tradeUSD}</span></span>
-                    <span>TP: <span className="text-emerald-400">${pos.takeProfit}</span></span>
-                    <span>SL: <span className="text-red-400">${pos.stopLoss}</span></span>
-                    <span className="text-gray-600">{ageMins}m ago</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Actionable signals */}
-      <div>
-        <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">
-          Actionable Signals ({actionable.length})
-          <span className="ml-2 text-gray-600 normal-case">≥65% confidence = auto-execute eligible</span>
-        </p>
-        {actionable.length === 0 && (
-          <div className="text-center text-gray-700 py-8 bg-gray-900 border border-gray-800 rounded-xl">
-            No actionable signals right now — market conditions don't meet thresholds
-          </div>
-        )}
-        <div className="space-y-2">
-          {actionable.map((signal, i) => (
-            <SignalCard key={i} signal={signal} index={i} onExecute={onExecute} realMoneyMode={realMoneyMode} />
-          ))}
-        </div>
-      </div>
-
-      {/* Hold signals (collapsed) */}
-      {hold.length > 0 && (
-        <details className="group">
-          <summary className="text-gray-600 text-xs cursor-pointer hover:text-gray-400 select-none">
-            ▶ {hold.length} HOLD signals (regime-based — no action)
-          </summary>
-          <div className="space-y-2 mt-2">
-            {hold.map((signal, i) => (
-              <SignalCard key={i} signal={signal} index={i} onExecute={onExecute} realMoneyMode={realMoneyMode} />
-            ))}
-          </div>
-        </details>
-      )}
-    </div>
-  );
-};
-
-// ─── Intelligence tab ─────────────────────────────────────────
-const IntelligenceTab = ({ intelligence }) => {
-  if (!intelligence) return (
-    <div className="text-gray-600 text-center py-16">
-      No intelligence data yet — let the bot scan for a few minutes.
-    </div>
-  );
-  const { topCycles, hourlyActivity } = intelligence;
-  const maxHits = Math.max(...(hourlyActivity?.map(h => h.hits) ?? [1]), 1);
-  return (
-    <div className="space-y-6">
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">📊 Hourly Arb Activity</p>
-        <div className="flex items-end gap-1 h-16">
-          {(hourlyActivity ?? []).map(({ hour, hits }) => (
-            <div key={hour} className="flex-1 flex flex-col items-center gap-1">
-              <div className="w-full bg-emerald-500/40 rounded-sm" style={{ height: `${Math.max((hits / maxHits) * 100, 2)}%` }} title={`${hour}:00 — ${hits} hits`} />
-              {hour % 4 === 0 && <span className="text-gray-600 text-xs">{hour}</span>}
-            </div>
-          ))}
-        </div>
-        <p className="text-gray-600 text-xs mt-2">Hour of day (UTC)</p>
-      </div>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">🏆 Top Triangular Cycles (ML Score)</p>
-        {(!topCycles || topCycles.length === 0) && <p className="text-gray-600 text-xs">Collecting data — needs 10 scans per cycle minimum.</p>}
-        <div className="space-y-2">
-          {(topCycles ?? []).map((c, i) => (
-            <div key={c.id} className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-2 last:border-0">
-              <div className="flex items-center gap-2">
-                <span className="text-gray-600 text-xs w-4">#{i + 1}</span>
-                <span className="text-orange-400 text-xs font-mono">{c.id}</span>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge color="yellow">score {c.score}</Badge>
-                <Badge color="green">avg {c.avgSpread}%</Badge>
-                <Badge color="blue">hit {c.hitRate}%</Badge>
-                <span className="text-gray-600 text-xs">{c.scans} scans · last: {c.lastHit}</span>
-              </div>
-            </div>
-          ))}
-        </div>
+      {/* Score breakdown bar */}
+      <div className="mt-2 flex gap-1 h-1.5">
+        <div className="bg-amber-500"  style={{ width: `${s.rvol * 35}%` }}  title={`RVOL ${s.rvol}`} />
+        <div className="bg-emerald-500" style={{ width: `${s.momentum * 30}%` }} title={`Momentum ${s.momentum}`} />
+        <div className="bg-sky-500"    style={{ width: `${s.technical * 20}%` }} title={`Technical ${s.technical}`} />
+        <div className="bg-violet-500" style={{ width: `${s.float * 15}%` }} title={`Float ${s.float}`} />
       </div>
     </div>
   );
 };
 
 // ─── Main app ─────────────────────────────────────────────────
-export default function ArbitrageAgent() {
-  const [config, setConfig]               = useState(null);
-  const [opportunities, setOpportunities] = useState([]);
-  const [crossCount, setCrossCount]       = useState(0);
-  const [triCount, setTriCount]           = useState(0);
-  const [balances, setBalances]           = useState({});
-  const [exchangeStatus, setExchangeStatus] = useState({});
-  const [arbTrades, setArbTrades]         = useState([]);
-  const [quantTrades, setQuantTrades]     = useState([]);
-  const [log, setLog]                     = useState([]);
-  const [intelligence, setIntelligence]   = useState(null);
-  const [quantData, setQuantData]         = useState(null);
-  const [backtestData, setBacktestData]   = useState(null);
-  const [backtestLoading, setBacktestLoading] = useState(false);
-  const [simData, setSimData]             = useState(null);
-  const [isRunning, setIsRunning]         = useState(false);
+export default function PennyStockBot() {
+  const [config, setConfig]         = useState(null);
+  const [scan, setScan]             = useState(null);
+  const [account, setAccount]       = useState(null);
+  const [marketHealth, setMarketHealth] = useState(null);
+  const [simData, setSimData]       = useState(null);
+  const [trades, setTrades]         = useState([]);
+  const [log, setLog]               = useState([]);
+  const [isRunning, setIsRunning]   = useState(false);
   const [realMoneyMode, setRealMoneyMode] = useState(false);
-  const [activeTab, setActiveTab]         = useState('quant');
-  const [lastArbScan, setLastArbScan]     = useState(null);
-  const [lastQuantScan, setLastQuantScan] = useState(null);
-  const [arbLoading, setArbLoading]       = useState(false);
-  const [quantLoading, setQuantLoading]   = useState(false);
-  const [arbStats, setArbStats]           = useState({ totalTrades: 0, wins: 0, totalPnl: 0 });
-  const arbIntervalRef                     = useRef(null);
-  const quantIntervalRef                   = useRef(null);
-  const intelligenceIntervalRef            = useRef(null);
-  const lastSignalKeyRef                   = useRef('');
+  const [activeTab, setActiveTab]   = useState('signals');
+  const [loading, setLoading]       = useState(false);
+  const [lastScan, setLastScan]     = useState(null);
+  const scanIntervalRef             = useRef(null);
 
   const addLog = useCallback((msg, type = 'info') => {
     setLog(prev => [{ id: Date.now() + Math.random(), msg, type, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 150));
   }, []);
 
-  // Load config on mount
   useEffect(() => {
     api.get('/api/config')
-      .then(cfg => { setConfig(cfg); addLog(`⚙️ Config loaded — ${cfg.pairs.length} arb pairs, ${cfg.trackedCoins?.length ?? 9} quant coins`, 'info'); })
+      .then(cfg => { setConfig(cfg); addLog(`⚙️ Config — $${cfg.priceRange?.[0]}–$${cfg.priceRange?.[1]} | RVOL ≥${cfg.minRvol}x | up ≥${cfg.minChangePct}%`, 'info'); })
       .catch(() => addLog('❌ Backend unreachable. Is server.js running?', 'error'));
-    fetchBalances();
-    fetchStatus();
+    api.get('/api/account').then(setAccount).catch(() => {});
   }, []);
 
-  const fetchBalances = useCallback(async () => {
-    try { setBalances(await api.get('/api/balances')); } catch {}
-  }, []);
-
-  const fetchStatus = useCallback(async () => {
-    try { setExchangeStatus(await api.get('/api/status')); } catch {}
-  }, []);
-
-  const fetchIntelligence = useCallback(async () => {
-    try { setIntelligence(await api.get('/api/intelligence')); } catch {}
-  }, []);
-
-  const fetchSimData = useCallback(async () => {
-    try {
-      const data = await api.get('/api/quant/sim');
-      setSimData(prev => ({ ...prev, ...data, openSimPositions: data.open }));
-    } catch {}
-  }, []);
-
-  // ─── Arb scan ───────────────────────────────────────────────
-  const runArbScan = useCallback(async () => {
-    setArbLoading(true);
+  const runScan = useCallback(async () => {
+    setLoading(true);
     try {
       const data = await api.get('/api/scan');
-      setOpportunities(data.opportunities ?? []);
-      setCrossCount(data.crossCount ?? 0);
-      setTriCount(data.triCount ?? 0);
-      setLastArbScan(data.scannedAt);
-      if (data.opportunities?.length > 0) {
-        const best = data.opportunities[0];
-        addLog(`↔ Arb: ${data.opportunities.length} opp — best ${best.type === 'triangular' ? best.id : best.pair} +${best.netPct}%`, 'success');
-      }
-    } catch (err) {
-      addLog(`❌ Arb scan error: ${err.message}`, 'error');
-    } finally {
-      setArbLoading(false);
-    }
-  }, [addLog]);
+      setScan(data);
+      setMarketHealth(data.marketHealth);
+      setSimData({ stats: data.simStats, open: data.openSimPositions });
+      setLastScan(data.scannedAt);
 
-  // ─── Quant scan ─────────────────────────────────────────────
-  const runQuantScan = useCallback(async () => {
-    setQuantLoading(true);
-    try {
-      const data = await api.get('/api/quant/signals');
-      setQuantData(data);
-      setLastQuantScan(data.scannedAt);
-      if (data.simStats) setSimData(data);
+      if (data.signals?.length > 0) {
+        const best = data.signals[0];
+        addLog(`🎯 ${data.signalCount} signals — top: ${best.symbol} ${best.strategy} (${(best.confidence * 100).toFixed(0)}%)`, 'success');
 
-      const actionable = (data.signals ?? []).filter(s => s.type === 'BUY' || s.type === 'SELL');
-      const newSignalKey = actionable.map(s => `${s.coin ?? s.pair}-${s.type}-${s.strategy}`).join(',');
-
-      if (actionable.length > 0 && newSignalKey !== lastSignalKeyRef.current) {
-        lastSignalKeyRef.current = newSignalKey;
-        const best = actionable[0];
-        addLog(`🧠 Quant: ${actionable.length} signal${actionable.length > 1 ? 's' : ''} — ${best.coin ?? best.pair} ${best.type} ${best.strategy} (${(best.confidence * 100).toFixed(0)}% conf)`, 'success');
-
-        // Reset signal key when no actionable signals
-      if (actionable.length === 0) lastSignalKeyRef.current = '';
-
-      // Auto-execute HIGH confidence BUY signals in real money mode
-        if (realMoneyMode && best.type === 'BUY' && best.confidence >= 0.65 && best.strategy !== 'pairs_trading') {
-          addLog(`🤖 Auto-executing quant signal: ${best.coin} BUY (${(best.confidence * 100).toFixed(0)}% conf)`, 'warn');
-          executeQuantTrade(best, true);
+        // Auto-execute STRONG signals in real money mode
+        if (realMoneyMode && best.tier === 'HIGH' && !best.gated &&
+            best.confidence >= (config?.autoExecuteThreshold ?? 0.75)) {
+          addLog(`🤖 Auto-executing: ${best.symbol} (${(best.confidence * 100).toFixed(0)}% conf)`, 'warn');
+          executeTrade(best, true);
         }
+      } else {
+        addLog(`🔍 Scanned ${data.runnerCount} runners — no qualifying signals`, 'info');
       }
 
-      // Log closed positions
-      if (data.closedPositions?.length > 0) {
-        for (const cp of data.closedPositions) {
-          const pnlStr = cp.pnlUSD >= 0 ? `+$${cp.pnlUSD.toFixed(4)}` : `-$${Math.abs(cp.pnlUSD).toFixed(4)}`;
-          addLog(`🔄 ${cp.coin} closed — ${cp.reason} | PnL: ${pnlStr}`, cp.pnlUSD >= 0 ? 'success' : 'error');
+      if (data.closedSimPositions?.length > 0) {
+        for (const cp of data.closedSimPositions) {
+          addLog(`📋 Sim closed ${cp.symbol} — ${cp.exitReason} | ${cp.netPnl >= 0 ? '+' : ''}$${cp.netPnl.toFixed(2)} (${cp.netPct}%)`, cp.won ? 'success' : 'error');
         }
       }
     } catch (err) {
-      addLog(`❌ Quant scan error: ${err.message}`, 'error');
+      addLog(`❌ Scan error: ${err.message}`, 'error');
     } finally {
-      setQuantLoading(false);
+      setLoading(false);
     }
-  }, [realMoneyMode, addLog]);
+  }, [realMoneyMode, config, addLog]);
 
-  // ─── Scanning loop ───────────────────────────────────────────
   useEffect(() => {
     if (isRunning) {
-      const interval = config?.scanIntervalMs ?? 4000;
-      // Arb: every scan interval
-      runArbScan();
-      arbIntervalRef.current = setInterval(() => { runArbScan(); fetchBalances(); }, interval);
-      // Quant: every 60s (candles are 1h, no need to scan faster)
-      runQuantScan();
-      quantIntervalRef.current = setInterval(runQuantScan, 60000);
-      // Intelligence: every 30s
-      // Intelligence: every 30s
-      fetchIntelligence();
-      intelligenceIntervalRef.current = setInterval(fetchIntelligence, 30000);
-      // Sim data: every 60s
-      fetchSimData();
-      setInterval(fetchSimData, 60000);
+      const interval = config?.scanIntervalMs ?? 30000;
+      runScan();
+      scanIntervalRef.current = setInterval(runScan, interval);
     } else {
-      clearInterval(arbIntervalRef.current);
-      clearInterval(quantIntervalRef.current);
-      clearInterval(intelligenceIntervalRef.current);
+      clearInterval(scanIntervalRef.current);
     }
-    return () => {
-      clearInterval(arbIntervalRef.current);
-      clearInterval(quantIntervalRef.current);
-      clearInterval(intelligenceIntervalRef.current);
-    };
-  }, [isRunning, runArbScan, runQuantScan, fetchBalances, fetchIntelligence, config]);
+    return () => clearInterval(scanIntervalRef.current);
+  }, [isRunning, runScan, config]);
 
-  // ─── Execute arb trade ───────────────────────────────────────
-  const executeArbTrade = useCallback(async (opp, autoConfirmed = false) => {
-    const label = opp.type === 'triangular' ? opp.id : opp.pair;
+  const executeTrade = useCallback(async (signal, autoConfirmed = false) => {
     if (!realMoneyMode) {
-      addLog(`🔍 SIM (arb): ${label} +${opp.netPct}%`, 'warn');
-      setArbTrades(prev => [{ id: Date.now(), label, type: opp.type, status: 'SIMULATED', netPct: opp.netPct, pnl: null, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
+      addLog(`🔍 SIM: ${signal.symbol} ${signal.strategy} (${(signal.confidence * 100).toFixed(0)}%)`, 'warn');
+      setTrades(prev => [{ id: Date.now(), symbol: signal.symbol, strategy: signal.strategy, status: 'SIMULATED', confidence: signal.confidence, pnl: null, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
       return;
     }
-    const confirmed = autoConfirmed || window.confirm(`⚠️ REAL ARB TRADE\n${label} +${opp.netPct}% net\nContinue?`);
+    const confirmed = autoConfirmed || window.confirm(
+      `⚠️ REAL TRADE\n${signal.symbol} — ${signal.strategy}\nConfidence: ${(signal.confidence * 100).toFixed(0)}%\nEntry: $${signal.price}\nTP: $${signal.takeProfit} | SL: $${signal.stopLoss}\nContinue?`);
     if (!confirmed) return;
-    addLog(`⚠️ LIVE ARB: ${label} +${opp.netPct}%`, 'error');
-    try {
-      const result = await api.post('/api/execute', { opportunity: opp, confirmed: true });
-      if (result.success) {
-        addLog(`✅ Arb success: +$${result.netProfit?.toFixed(4)}`, 'success');
-        setArbStats(prev => ({ totalTrades: prev.totalTrades + 1, wins: prev.wins + 1, totalPnl: +(prev.totalPnl + result.netProfit).toFixed(4) }));
-        setArbTrades(prev => [{ id: Date.now(), label, type: opp.type, status: 'FILLED', netPct: opp.netPct, pnl: result.netProfit, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
-        fetchBalances();
-      } else {
-        addLog(`❌ Arb failed: ${result.reason}`, 'error');
-        if (result.URGENT) addLog('🚨 URGENT: Check exchanges — buy order may be open!', 'error');
-        setArbTrades(prev => [{ id: Date.now(), label, type: opp.type, status: 'FAILED', netPct: opp.netPct, pnl: null, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
-      }
-    } catch (err) {
-      addLog(`❌ Arb execute error: ${err.message}`, 'error');
-    }
-  }, [realMoneyMode, addLog, fetchBalances]);
-
-  // ─── Execute quant trade ─────────────────────────────────────
-  const executeQuantTrade = useCallback(async (signal, autoConfirmed = false) => {
-    const label = signal.coin ?? signal.pair;
-    if (!realMoneyMode) {
-      addLog(`🔍 SIM (quant): ${label} ${signal.type} via ${signal.strategy} (${(signal.confidence * 100).toFixed(0)}% conf)`, 'warn');
-      setQuantTrades(prev => [{ id: Date.now(), label, strategy: signal.strategy, type: signal.type, status: 'SIMULATED', confidence: signal.confidence, pnl: null, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
-      return;
-    }
-    const confirmed = autoConfirmed || window.confirm(`⚠️ REAL QUANT TRADE\n${label} ${signal.type}\nStrategy: ${signal.strategy}\nConfidence: ${(signal.confidence * 100).toFixed(0)}%\nEntry: $${signal.price}\nTP: $${signal.takeProfit} | SL: $${signal.stopLoss}\nContinue?`);
-    if (!confirmed) return;
-    addLog(`⚠️ LIVE QUANT: ${label} ${signal.type} ${signal.strategy}`, 'error');
+    addLog(`⚠️ LIVE: ${signal.symbol} ${signal.strategy}`, 'error');
     try {
       const result = await api.post('/api/quant/execute', { signal, confirmed: true });
       if (result.success) {
-        addLog(`✅ Quant position opened: ${label} $${result.tradeUSD}`, 'success');
-        setQuantTrades(prev => [{ id: Date.now(), label, strategy: signal.strategy, type: signal.type, status: 'OPEN', confidence: signal.confidence, pnl: null, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
-        fetchBalances();
-        setTimeout(runQuantScan, 2000); // Refresh positions
+        addLog(`✅ Order placed: ${result.qty} ${signal.symbol} ($${result.tradeUSD})`, 'success');
+        setTrades(prev => [{ id: Date.now(), symbol: signal.symbol, strategy: signal.strategy, status: 'OPEN', confidence: signal.confidence, pnl: null, timestamp: new Date().toLocaleTimeString() }, ...prev].slice(0, 100));
+        api.get('/api/account').then(setAccount).catch(() => {});
       } else {
-        addLog(`❌ Quant failed: ${result.reason}`, 'error');
+        addLog(`❌ Rejected: ${result.reason}`, 'error');
       }
     } catch (err) {
-      addLog(`❌ Quant execute error: ${err.message}`, 'error');
+      addLog(`❌ Execute error: ${err.message}`, 'error');
     }
-  }, [realMoneyMode, addLog, fetchBalances, runQuantScan]);
+  }, [realMoneyMode, addLog]);
 
   const handleEmergencyStop = async () => {
     setIsRunning(false); setRealMoneyMode(false);
-    [arbIntervalRef, quantIntervalRef, intelligenceIntervalRef].forEach(r => clearInterval(r.current));
-    addLog('🛑 EMERGENCY STOP — check your exchanges immediately!', 'error');
-    try { await api.post('/api/emergency-stop', {}); } catch {}
+    clearInterval(scanIntervalRef.current);
+    addLog('🛑 EMERGENCY STOP — liquidating all positions!', 'error');
+    try {
+      const r = await api.post('/api/emergency-stop', {});
+      addLog(`🛑 Stopped — ${r.positionsClosed ?? 0} positions closed`, 'error');
+    } catch {}
   };
 
-  const exchanges    = config?.exchanges ?? ['BinanceUS', 'Kraken', 'Coinbase'];
-  const totalBalance = Object.values(balances).reduce((s, v) => s + (v || 0), 0);
-  const arbWinRate   = arbStats.totalTrades > 0 ? ((arbStats.wins / arbStats.totalTrades) * 100).toFixed(1) : '—';
-  const quantStats   = quantData?.stats ?? {};
+  const signals    = scan?.signals ?? [];
+  const runners    = scan?.runners ?? [];
+  const simStats   = simData?.stats ?? {};
+  const portfolioValue = account ? parseFloat(account.portfolio_value) : 0;
+  const buyingPower    = account ? parseFloat(account.buying_power) : 0;
+
+  const mhColor = marketHealth?.regime === 'RISK_ON' ? 'green'
+                : marketHealth?.regime === 'RISK_OFF' ? 'red' : 'yellow';
 
   const TABS = [
-    { id: 'sim',           label: '📋 Sim Results',   count: simData?.simStats?.trades || null },
-    { id: 'quant',         label: '🧠 Quant',        count: (quantData?.signals ?? []).filter(s => s.type === 'BUY' || s.type === 'SELL').length || null },
-    { id: 'opportunities', label: '↔ Arb',             count: opportunities.length || null },
-    { id: 'triangular',    label: '🔺 Triangular',     count: triCount > 0 ? triCount : null },
-    { id: 'intelligence',  label: '📊 Intelligence',   count: null },
-    { id: 'backtest',      label: '🔬 Backtest',       count: null },
-    { id: 'trades',        label: 'Trades',            count: (arbTrades.length + quantTrades.length) || null },
-    { id: 'log',           label: 'Log',               count: null },
-    { id: 'status',        label: 'Status',            count: null },
+    { id: 'signals',  label: '🎯 Signals',  count: signals.length || null },
+    { id: 'runners',  label: '🏃 Runners',  count: runners.length || null },
+    { id: 'sim',      label: '📋 Sim',      count: simStats.trades || null },
+    { id: 'trades',   label: 'Trades',      count: trades.length || null },
+    { id: 'log',      label: 'Log',         count: null },
+    { id: 'config',   label: 'Config',      count: null },
   ];
-
-  const shownArbOpps = activeTab === 'triangular'
-    ? opportunities.filter(o => o.type === 'triangular')
-    : opportunities;
 
   return (
     <div className="bg-gray-950 min-h-screen text-white font-mono text-sm">
-
-      {/* ── Header ─────────────────────────────────────────── */}
+      {/* Header */}
       <div className="border-b border-gray-800 px-6 py-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-base font-bold tracking-tight">
-              ⚡ ArbitrageAI
+              🏃 Penny Stock Runner Bot
               <span className="ml-2 text-xs text-gray-500 font-normal">
-                {config ? `Arb: ${config.arbExchanges?.join(' ↔ ')} · Quant: ${config.trackedCoins?.length ?? 9} coins` : 'Connecting...'}
+                {config ? `${config.broker?.broker} ${config.broker?.paper ? '· PAPER' : '· LIVE'}` : 'Connecting...'}
               </span>
             </h1>
             <p className="text-gray-600 text-xs mt-0.5">
-              {lastArbScan && `Arb: ${new Date(lastArbScan).toLocaleTimeString()}`}
-              {lastQuantScan && ` · Quant: ${new Date(lastQuantScan).toLocaleTimeString()}`}
-              {(arbLoading || quantLoading) && <span className="ml-2 text-amber-400 animate-pulse">● Scanning...</span>}
+              {lastScan && `Last scan: ${new Date(lastScan).toLocaleTimeString()}`}
+              {loading && <span className="ml-2 text-amber-400 animate-pulse">● Scanning...</span>}
+              {marketHealth && <span className="ml-2">· Market: <span className={`text-${mhColor === 'green' ? 'emerald' : mhColor === 'red' ? 'red' : 'amber'}-400`}>{marketHealth.regime}</span></span>}
             </p>
           </div>
           <div className="flex gap-2 items-center flex-wrap">
             <button
               onClick={() => {
                 if (!realMoneyMode) {
-                  if (window.confirm('⚠️ WARNING: This enables REAL trades with real money.\n\nAre you sure?')) {
+                  if (window.confirm('⚠️ Enable REAL trades?\n\nMake sure ALPACA_PAPER is set correctly. Continue?')) {
                     setRealMoneyMode(true);
-                    addLog('🔴 REAL MONEY MODE ON — arb + quant trades will execute', 'error');
+                    addLog('🔴 REAL MONEY MODE ON', 'error');
                   }
-                } else {
-                  setRealMoneyMode(false);
-                  addLog('🟡 Real money mode off', 'warn');
-                }
+                } else { setRealMoneyMode(false); addLog('🟡 Sim mode', 'warn'); }
               }}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs transition-all ${
                 realMoneyMode ? 'bg-red-500/20 border-red-500/50 text-red-400 animate-pulse' : 'bg-gray-800 border-gray-700 text-gray-400'
-              }`}
-            >
+              }`}>
               <span className={`w-2 h-2 rounded-full ${realMoneyMode ? 'bg-red-400' : 'bg-gray-600'}`} />
               {realMoneyMode ? '⚠️ REAL MONEY' : 'Simulation'}
             </button>
@@ -622,360 +351,123 @@ export default function ArbitrageAgent() {
               </button>
             )}
             <button
-              onClick={() => {
-                const next = !isRunning;
-                setIsRunning(next);
-                addLog(next ? '🚀 Scanning started — arb + quant' : '⏸ Paused', next ? 'success' : 'warn');
-              }}
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors ${isRunning ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-700 hover:bg-emerald-600'} text-white`}
-            >
+              onClick={() => { const next = !isRunning; setIsRunning(next); addLog(next ? '🚀 Scanning started' : '⏸ Paused', next ? 'success' : 'warn'); }}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors ${isRunning ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-700 hover:bg-emerald-600'} text-white`}>
               {isRunning ? '⏸ Pause' : '▶ Start'}
             </button>
           </div>
         </div>
       </div>
 
-      {/* ── Stats ──────────────────────────────────────────── */}
+      {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 px-6 py-4">
-        <StatCard label="Total Balance"  value={`$${totalBalance.toFixed(2)}`}  sub={`${exchanges.length} exchanges`} color={totalBalance > 0 ? 'green' : 'yellow'} />
-        <StatCard label="Arb P&L"        value={`${arbStats.totalPnl >= 0 ? '+' : ''}$${arbStats.totalPnl.toFixed(4)}`} sub={`${arbStats.totalTrades} arb trades`} color={arbStats.totalPnl >= 0 ? 'green' : 'red'} />
-        <StatCard label="Quant P&L"      value={`${(quantStats.totalPnl ?? 0) >= 0 ? '+' : ''}$${(quantStats.totalPnl ?? 0).toFixed(4)}`} sub={`${quantStats.trades ?? 0} quant trades`} color={(quantStats.totalPnl ?? 0) >= 0 ? 'cyan' : 'red'} />
-        <StatCard label="Mode"           value={realMoneyMode ? '🔴 LIVE' : '🟡 Sim'} sub={isRunning ? 'Scanning...' : 'Paused'} color={realMoneyMode ? 'red' : 'yellow'} />
-      </div>
-      <div className="grid gap-3 px-6 pb-4" style={{ gridTemplateColumns: `repeat(${exchanges.length}, 1fr)` }}>
-        {exchanges.map(ex => (
-          <StatCard key={ex} label={ex} value={`$${(balances[ex] ?? 0).toFixed(2)}`} sub="USDT" />
-        ))}
+        <StatCard label="Portfolio Value" value={`$${portfolioValue.toFixed(2)}`} sub={`Buying power $${buyingPower.toFixed(2)}`} color={portfolioValue > 0 ? 'green' : 'yellow'} />
+        <StatCard label="Runners Found" value={runners.length} sub={`${scan?.strongBuys ?? 0} strong buys`} color="cyan" />
+        <StatCard label="Sim Win Rate" value={simStats.trades > 0 ? `${simStats.winRate}%` : '—'} sub={`${simStats.trades ?? 0} sim trades`} color={simStats.winRate >= 50 ? 'green' : simStats.trades > 0 ? 'red' : 'yellow'} />
+        <StatCard label="Mode" value={realMoneyMode ? '🔴 LIVE' : '🟡 Sim'} sub={isRunning ? 'Scanning...' : 'Paused'} color={realMoneyMode ? 'red' : 'yellow'} />
       </div>
 
-      {/* ── Tabs ───────────────────────────────────────────── */}
+      {/* Market health banner */}
+      {marketHealth && (
+        <div className="px-6 pb-2">
+          <div className={`rounded-lg px-3 py-2 text-xs border ${
+            mhColor === 'green' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+            mhColor === 'red'   ? 'bg-red-500/10 border-red-500/30 text-red-400' :
+            'bg-amber-500/10 border-amber-500/30 text-amber-400'}`}>
+            🌐 {marketHealth.reason} · SPY {marketHealth.spyChange >= 0 ? '+' : ''}{marketHealth.spyChange}% · QQQ {marketHealth.qqqChange >= 0 ? '+' : ''}{marketHealth.qqqChange}%
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
       <div className="px-6 border-b border-gray-800 flex gap-0 overflow-x-auto">
         {TABS.map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
             className={`px-4 py-2.5 text-xs font-mono whitespace-nowrap border-b-2 transition-colors ${
               activeTab === tab.id ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-gray-500 hover:text-gray-300'
-            }`}
-          >
+            }`}>
             {tab.label}
             {tab.count > 0 && <span className="ml-1.5 bg-emerald-600 text-white text-xs px-1.5 py-0.5 rounded-full">{tab.count}</span>}
           </button>
         ))}
       </div>
 
-      {/* ── Tab content ────────────────────────────────────── */}
+      {/* Content */}
       <div className="px-6 py-4">
+        {/* Signals */}
+        {activeTab === 'signals' && (
+          <div className="space-y-2">
+            {!isRunning && <div className="text-center text-gray-600 py-16">Press <span className="text-emerald-400">Start</span> to scan for runners</div>}
+            {isRunning && signals.length === 0 && !loading && (
+              <div className="text-center text-gray-600 py-16">
+                No qualifying signals right now
+                <p className="text-xs text-gray-700 mt-1">Runners need RVOL ≥{config?.minRvol}x + up ≥{config?.minChangePct}% with technical/squeeze/news confirmation</p>
+              </div>
+            )}
+            {signals.map((signal, i) => (
+              <SignalCard key={`${signal.symbol}-${i}`} signal={signal} index={i} onExecute={executeTrade} realMoneyMode={realMoneyMode} />
+            ))}
+          </div>
+        )}
 
-        {/* Sim Results */}
+        {/* Runners */}
+        {activeTab === 'runners' && (
+          <div className="space-y-2">
+            {runners.length === 0 && <div className="text-center text-gray-600 py-16">No runners found — press Start</div>}
+            {runners.map((runner) => <RunnerCard key={runner.symbol} runner={runner} />)}
+            {runners.length > 0 && (
+              <p className="text-gray-600 text-xs mt-3">
+                Score bar: <span className="text-amber-400">RVOL</span> · <span className="text-emerald-400">Momentum</span> · <span className="text-sky-400">Technical</span> · <span className="text-violet-400">Float</span>
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Sim */}
         {activeTab === 'sim' && (
           <div className="space-y-6">
-            {/* Sim stats summary */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <StatCard label="Sim Trades"    value={simData?.simStats?.trades ?? 0}       sub="Completed"          color="cyan" />
-              <StatCard label="Sim Win Rate"  value={simData?.simStats?.trades > 0 ? `${simData.simStats.winRate}%` : '—'} color={simData?.simStats?.winRate >= 50 ? 'green' : simData?.simStats?.trades > 0 ? 'red' : 'yellow'} />
-              <StatCard label="Sim PnL"       value={`${(simData?.simStats?.totalPnl ?? 0) >= 0 ? '+' : ''}$${(simData?.simStats?.totalPnl ?? 0).toFixed(4)}`} color={(simData?.simStats?.totalPnl ?? 0) >= 0 ? 'green' : 'red'} />
-              <StatCard label="Profit Factor" value={simData?.simStats?.profitFactor ?? 0} color={simData?.simStats?.profitFactor >= 1.2 ? 'green' : 'yellow'} />
+              <StatCard label="Sim Trades"    value={simStats.trades ?? 0} sub="Completed" color="cyan" />
+              <StatCard label="Win Rate"      value={simStats.trades > 0 ? `${simStats.winRate}%` : '—'} color={simStats.winRate >= 50 ? 'green' : simStats.trades > 0 ? 'red' : 'yellow'} />
+              <StatCard label="Total PnL"     value={`${(simStats.totalPnl ?? 0) >= 0 ? '+' : ''}$${(simStats.totalPnl ?? 0).toFixed(2)}`} color={(simStats.totalPnl ?? 0) >= 0 ? 'green' : 'red'} />
+              <StatCard label="Profit Factor" value={simStats.profitFactor ?? 0} color={simStats.profitFactor >= 1.2 ? 'green' : 'yellow'} />
             </div>
-
-            {/* Exit reason breakdown */}
-            {simData?.simStats?.byExitReason && Object.keys(simData.simStats.byExitReason).length > 0 && (
+            {simStats.byStrategy && Object.keys(simStats.byStrategy).length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Exit Reasons</p>
-                <div className="flex gap-6 flex-wrap">
-                  {Object.entries(simData.simStats.byExitReason).map(([reason, data]) => (
-                    <div key={reason} className="text-xs">
-                      <span className="text-gray-400">{reason}: </span>
-                      <span className="text-white">{data.count} </span>
-                      <span className={data.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                        {data.pnl >= 0 ? '+' : ''}${data.pnl.toFixed(4)}
-                      </span>
+                <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">By Strategy</p>
+                <div className="space-y-2">
+                  {Object.entries(simStats.byStrategy).map(([strat, d]) => (
+                    <div key={strat} className="flex items-center justify-between text-xs border-b border-gray-800 pb-2 last:border-0">
+                      <span className="text-gray-300">{STRATEGY_LABELS[strat]?.label ?? strat}</span>
+                      <div className="flex gap-2">
+                        <Badge color={d.wins / d.count >= 0.5 ? 'green' : 'red'}>{((d.wins / d.count) * 100).toFixed(0)}% WR</Badge>
+                        <Badge color={d.pnl >= 0 ? 'green' : 'red'}>{d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(2)}</Badge>
+                        <Badge color="gray">{d.count} trades</Badge>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
-
-            {/* Open sim positions */}
-            {(simData?.openSimPositions?.length > 0) && (
+            {(simData?.open?.length > 0) && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">
-                  Open Sim Positions ({simData.openSimPositions.length})
-                </p>
+                <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Open Sim Positions ({simData.open.length})</p>
                 <div className="space-y-2">
-                  {simData.openSimPositions.map((pos, i) => {
-                    const ageMins = Math.round((Date.now() - pos.openedAt) / 60000);
-                    return (
-                      <div key={i} className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-2 last:border-0">
-                        <div className="flex items-center gap-2">
-                          <Badge color="cyan">SIM</Badge>
-                          <span className="text-white text-xs font-mono">{pos.coin}</span>
-                          <Badge color="gray">{pos.strategy}</Badge>
-                          <Badge color={pos.confidence >= 0.75 ? 'green' : 'yellow'}>
-                            {(pos.confidence * 100).toFixed(0)}% conf
-                          </Badge>
-                        </div>
-                        <div className="flex gap-3 text-xs text-gray-500">
-                          <span>Entry: <span className="text-white">${pos.entryPrice}</span></span>
-                          <span>TP: <span className="text-emerald-400">${pos.takeProfit}</span></span>
-                          <span>SL: <span className="text-red-400">${pos.stopLoss}</span></span>
-                          <span className="text-gray-600">{ageMins}m open</span>
-                        </div>
+                  {simData.open.map((pos, i) => (
+                    <div key={i} className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-2 last:border-0">
+                      <div className="flex items-center gap-2">
+                        <Badge color="cyan">SIM</Badge>
+                        <span className="text-white text-xs font-mono">{pos.symbol}</span>
+                        <Badge color="gray">{pos.strategy}</Badge>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Completed sim trades */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">
-                Completed Sim Trades
-                <span className="ml-2 text-gray-600 normal-case">
-                  Compare win rate here vs backtest 47.6% to validate the strategy
-                </span>
-              </p>
-              {(!simData?.simStats?.trades || simData.simStats.trades === 0) && (
-                <div className="text-center text-gray-600 py-8">
-                  No completed sim trades yet — signals need to open and then hit TP, SL, or 48h timeout
-                </div>
-              )}
-              <div className="space-y-2">
-                {(simData?.history ?? []).map((t, i) => (
-                  <div key={i} className={`border rounded-xl p-3 flex items-center justify-between flex-wrap gap-2 ${t.won ? 'border-emerald-800/40 bg-emerald-900/10' : 'border-red-800/40 bg-red-900/10'}`}>
-                    <div className="flex items-center gap-2">
-                      <Badge color={t.won ? 'green' : 'red'}>{t.exitReason}</Badge>
-                      <span className="text-white text-xs font-mono">{t.coin}</span>
-                      <Badge color="gray">{t.strategy}</Badge>
-                      <Badge color={t.confidence >= 0.75 ? 'green' : 'yellow'}>
-                        {(t.confidence * 100).toFixed(0)}% conf
-                      </Badge>
+                      <div className="flex gap-3 text-xs text-gray-500">
+                        <span>Entry ${pos.entryPrice?.toFixed(3)}</span>
+                        <span className="text-emerald-400">TP ${pos.takeProfit?.toFixed(3)}</span>
+                        <span className="text-red-400">SL ${pos.stopLoss?.toFixed(3)}</span>
+                      </div>
                     </div>
-                    <div className="flex gap-3 text-xs">
-                      <span className={`font-mono font-bold ${t.won ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {t.netPnl >= 0 ? '+' : ''}${t.netPnl.toFixed(4)} ({t.netPct.toFixed(2)}%)
-                      </span>
-                      <span className="text-gray-500">Entry ${t.entryPrice}</span>
-                      <span className="text-gray-500">Exit ${t.exitPrice}</span>
-                      <span className="text-gray-600">{t.holdHours}h held</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {!isRunning && (
-              <div className="text-center text-gray-600 py-8">
-                Press <span className="text-emerald-400">Start</span> to begin sim tracking
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Quant */}
-        {activeTab === 'quant' && (
-          <QuantTab quantData={quantData} onExecute={executeQuantTrade} realMoneyMode={realMoneyMode} />
-        )}
-
-        {/* Arb + Triangular */}
-        {(activeTab === 'opportunities' || activeTab === 'triangular') && (
-          <div className="space-y-2">
-            {!isRunning && <div className="text-center text-gray-600 py-16">Press <span className="text-emerald-400">Start</span> to scan</div>}
-            {isRunning && shownArbOpps.length === 0 && !arbLoading && (
-              <div className="text-center text-gray-600 py-16">
-                No opportunities above {((config?.minProfitThreshold ?? 0.001) * 100).toFixed(1)}% threshold
-                <p className="text-xs text-gray-700 mt-1">
-                  {activeTab === 'triangular'
-                    ? 'Triangular cycles need ~10 scans to warm up the ML ranker.'
-                    : 'Cross-exchange: BinanceUS ↔ Kraken. Coinbase excluded (high fees).'}
-                </p>
-              </div>
-            )}
-            {shownArbOpps.map((opp, i) => (
-              <ArbCard key={`${opp.id ?? opp.pair}-${i}`} opp={opp} index={i}
-                onExecute={executeArbTrade} realMoneyMode={realMoneyMode} capitalPerTrade={config?.capitalPerTrade} />
-            ))}
-          </div>
-        )}
-
-        {/* Intelligence */}
-        {activeTab === 'intelligence' && <IntelligenceTab intelligence={intelligence} />}
-
-        {/* Backtest */}
-        {activeTab === 'backtest' && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-white text-sm font-bold">Strategy Backtest</p>
-                <p className="text-gray-500 text-xs mt-1">Runs signal engine against {500} × 4h candles (~83 days). Takes 15-30 seconds.</p>
-              </div>
-              <button
-                onClick={async () => {
-                  setBacktestLoading(true);
-                  addLog('🔬 Running backtest — this takes ~20 seconds...', 'info');
-                  try {
-                    const data = await api.get('/api/backtest');
-                    setBacktestData(data);
-                    addLog(`✅ Backtest complete — ${data.totalTrades} trades, ${data.portfolioStats?.winRate}% win rate`, 'success');
-                  } catch (err) {
-                    addLog(`❌ Backtest failed: ${err.message}`, 'error');
-                  } finally {
-                    setBacktestLoading(false);
-                  }
-                }}
-                disabled={backtestLoading}
-                className="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-xs font-bold text-white transition-colors"
-              >
-                {backtestLoading ? '⏳ Running...' : '▶ Run Backtest'}
-              </button>
-            </div>
-
-            {!backtestData && !backtestLoading && (
-              <div className="text-center text-gray-600 py-16 bg-gray-900 border border-gray-800 rounded-xl">
-                Click Run Backtest to test the strategy against historical data
-              </div>
-            )}
-
-            {backtestLoading && (
-              <div className="text-center text-cyan-400 py-16 bg-gray-900 border border-gray-800 rounded-xl animate-pulse">
-                ⏳ Running backtest across {9} coins × 500 candles...
-              </div>
-            )}
-
-            {backtestData && (
-              <div className="space-y-6">
-                {/* Portfolio summary */}
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                  <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Portfolio Summary — {backtestData.totalTrades} trades · {backtestData.duration}</p>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <StatCard label="Win Rate"      value={`${backtestData.portfolioStats?.winRate ?? 0}%`}  color={backtestData.portfolioStats?.winRate >= 50 ? 'green' : 'red'} />
-                    <StatCard label="Total PnL"     value={`${(backtestData.portfolioStats?.totalPnl ?? 0) >= 0 ? '+' : ''}$${(backtestData.portfolioStats?.totalPnl ?? 0).toFixed(4)}`} color={(backtestData.portfolioStats?.totalPnl ?? 0) >= 0 ? 'green' : 'red'} />
-                    <StatCard label="Profit Factor" value={backtestData.portfolioStats?.profitFactor ?? 0}   color={backtestData.portfolioStats?.profitFactor >= 1.2 ? 'green' : 'red'} />
-                    <StatCard label="Sharpe Ratio"  value={backtestData.portfolioStats?.sharpe ?? 0}         color={backtestData.portfolioStats?.sharpe >= 1 ? 'green' : 'yellow'} />
-                  </div>
+                  ))}
                 </div>
-
-                {/* Confidence bucket analysis */}
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                  <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Does Confidence Score Predict Outcomes?</p>
-                  <div className="space-y-2">
-                    {Object.entries(backtestData.portfolioStats?.byConfidenceBucket ?? {}).map(([bucket, data]) => (
-                      <div key={bucket} className="flex items-center justify-between text-xs">
-                        <span className="text-gray-400 w-24">{bucket}</span>
-                        <div className="flex-1 mx-3 bg-gray-800 rounded-full h-2">
-                          <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${data.winRate}%` }} />
-                        </div>
-                        <span className={`w-16 text-right ${data.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>{data.winRate}% wins</span>
-                        <span className="text-gray-600 w-16 text-right">{data.count} trades</span>
-                        <span className={`w-20 text-right ${data.avgPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{data.avgPnl >= 0 ? '+' : ''}${data.avgPnl}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-gray-600 text-xs mt-2">If higher confidence buckets show higher win rates, the scoring system is working correctly.</p>
-                </div>
-
-                {/* Per-coin results */}
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                  <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Results by Coin</p>
-                  <div className="space-y-2">
-                    {Object.entries(backtestData.coinResults ?? {}).sort((a, b) => b[1].totalPnl - a[1].totalPnl).map(([coin, r]) => (
-                      <div key={coin} className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-2 last:border-0">
-                        <span className="text-white text-xs font-mono w-12">{coin}</span>
-                        <div className="flex gap-2 flex-wrap">
-                          <Badge color={r.winRate >= 50 ? 'green' : 'red'}>{r.winRate}% WR</Badge>
-                          <Badge color={r.totalPnl >= 0 ? 'green' : 'red'}>{r.totalPnl >= 0 ? '+' : ''}${r.totalPnl}</Badge>
-                          <Badge color="gray">{r.totalTrades} trades</Badge>
-                          <Badge color={r.sharpe >= 1 ? 'cyan' : 'gray'}>Sharpe {r.sharpe}</Badge>
-                          <Badge color={r.maxDrawdown < 10 ? 'green' : 'red'}>DD {r.maxDrawdown}%</Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Strategy breakdown */}
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                  <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Results by Strategy</p>
-                  <div className="space-y-2">
-                    {Object.entries(backtestData.portfolioStats?.byStrategy ?? {}).map(([strategy, data]) => (
-                      <div key={strategy} className="flex items-center justify-between text-xs border-b border-gray-800 pb-2 last:border-0">
-                        <span className="text-gray-300 w-32">{strategy}</span>
-                        <div className="flex gap-2">
-                          <Badge color={data.winRate >= 50 ? 'green' : 'red'}>{data.winRate}% WR</Badge>
-                          <Badge color={data.pnl >= 0 ? 'green' : 'red'}>{data.pnl >= 0 ? '+' : ''}${data.pnl}</Badge>
-                          <Badge color="gray">{data.count} trades</Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Ablation results */}
-                {Object.keys(backtestData.ablation ?? {}).length > 0 && (
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                    <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Ablation Tests — What happens when components are removed?</p>
-                    {Object.entries(backtestData.ablation).map(([coin, results]) => (
-                      <div key={coin} className="mb-4">
-                        <p className="text-gray-500 text-xs mb-2">{coin}</p>
-                        <div className="space-y-1">
-                          {results.map((r, i) => (
-                            <div key={i} className="flex items-center justify-between text-xs border-b border-gray-800 pb-1 last:border-0">
-                              <span className={`w-48 ${i === 0 ? 'text-cyan-400 font-bold' : 'text-gray-400'}`}>{r.name}</span>
-                              <div className="flex gap-2">
-                                <Badge color={r.winRate >= 50 ? 'green' : 'red'}>{r.winRate}% WR</Badge>
-                                <Badge color={r.totalPnl >= 0 ? 'green' : 'red'}>{r.totalPnl >= 0 ? '+' : ''}${r.totalPnl}</Badge>
-                                <Badge color="gray">{r.trades} trades</Badge>
-                                <Badge color={r.sharpe >= 1 ? 'cyan' : 'gray'}>Sharpe {r.sharpe}</Badge>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                    <p className="text-gray-600 text-xs mt-2">If removing a component improves results, consider dropping it. If it hurts, it's earning its place.</p>
-                  </div>
-                )}
-
-                {/* V3 comparison */}
-                {backtestData.v3 && (
-                  <div className="bg-gray-900 border border-cyan-800/40 rounded-xl p-4">
-                    <p className="text-cyan-400 text-xs uppercase tracking-wide mb-1">🔬 V3 Preview</p>
-                    <p className="text-gray-600 text-xs mb-3">{backtestData.v3.label}</p>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                      <StatCard label="V3 Win Rate"     value={`${backtestData.v3.portfolioStats?.winRate ?? 0}%`} color={backtestData.v3.portfolioStats?.winRate >= 50 ? 'green' : 'red'} />
-                      <StatCard label="V3 Total PnL"    value={`${(backtestData.v3.portfolioStats?.totalPnl ?? 0) >= 0 ? '+' : ''}$${(backtestData.v3.portfolioStats?.totalPnl ?? 0).toFixed(4)}`} color={(backtestData.v3.portfolioStats?.totalPnl ?? 0) >= 0 ? 'green' : 'red'} />
-                      <StatCard label="V3 Profit Factor" value={backtestData.v3.portfolioStats?.profitFactor ?? 0} color={backtestData.v3.portfolioStats?.profitFactor >= 1.2 ? 'green' : 'red'} />
-                      <StatCard label="V3 Trades"       value={backtestData.v3.totalTrades} sub="vs 94 full system" color="cyan" />
-                    </div>
-                    <div className="space-y-2">
-                      {Object.entries(backtestData.v3.coinResults ?? {}).sort((a, b) => b[1].totalPnl - a[1].totalPnl).map(([coin, r]) => (
-                        <div key={coin} className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-1 last:border-0">
-                          <span className="text-white text-xs font-mono w-12">{coin}</span>
-                          <div className="flex gap-2 flex-wrap">
-                            <Badge color={r.winRate >= 50 ? 'green' : 'red'}>{r.winRate}% WR</Badge>
-                            <Badge color={r.totalPnl >= 0 ? 'green' : 'red'}>{r.totalPnl >= 0 ? '+' : ''}${r.totalPnl}</Badge>
-                            <Badge color="gray">{r.totalTrades} trades</Badge>
-                            <Badge color={r.sharpe >= 1 ? 'cyan' : 'gray'}>Sharpe {r.sharpe}</Badge>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Exit reason breakdown */}
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                  <p className="text-gray-400 text-xs uppercase tracking-wide mb-3">Exit Reasons</p>
-                  <div className="flex gap-4 flex-wrap">
-                    {Object.entries(backtestData.portfolioStats?.byExitReason ?? {}).map(([reason, data]) => (
-                      <div key={reason} className="text-xs">
-                        <span className="text-gray-400">{reason}: </span>
-                        <span className="text-white">{data.count} trades </span>
-                        <span className={data.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{data.pnl >= 0 ? '+' : ''}${data.pnl.toFixed(4)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
               </div>
             )}
           </div>
@@ -983,54 +475,19 @@ export default function ArbitrageAgent() {
 
         {/* Trades */}
         {activeTab === 'trades' && (
-          <div className="space-y-4">
-            {/* Quant trades */}
-            {quantTrades.length > 0 && (
-              <div>
-                <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Quant Trades</p>
-                <div className="space-y-2">
-                  {quantTrades.map(t => (
-                    <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-2">
-                        <Badge color={t.status === 'OPEN' ? 'yellow' : t.status === 'SIMULATED' ? 'purple' : t.pnl > 0 ? 'green' : 'red'}>{t.status}</Badge>
-                        <Badge color="cyan">🧠</Badge>
-                        <span className="text-gray-300 text-xs">{t.label}</span>
-                        <Badge color="gray">{t.strategy}</Badge>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {t.pnl != null && <span className={`text-xs font-mono ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(4)}</span>}
-                        <span className="text-gray-600 text-xs">{t.timestamp}</span>
-                      </div>
-                    </div>
-                  ))}
+          <div className="space-y-2">
+            {trades.length === 0 && <div className="text-center text-gray-600 py-16">No trades yet</div>}
+            {trades.map(t => (
+              <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <Badge color={t.status === 'OPEN' ? 'yellow' : t.status === 'SIMULATED' ? 'purple' : 'green'}>{t.status}</Badge>
+                  <span className="text-gray-300 text-xs font-mono">{t.symbol}</span>
+                  <Badge color="gray">{t.strategy}</Badge>
+                  <Badge color="cyan">{(t.confidence * 100).toFixed(0)}%</Badge>
                 </div>
+                <span className="text-gray-600 text-xs">{t.timestamp}</span>
               </div>
-            )}
-            {/* Arb trades */}
-            {arbTrades.length > 0 && (
-              <div>
-                <p className="text-gray-500 text-xs uppercase tracking-wide mb-2">Arb Trades</p>
-                <div className="space-y-2">
-                  {arbTrades.map(t => (
-                    <div key={t.id} className="bg-gray-900 border border-gray-800 rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-2">
-                        <Badge color={t.status === 'FILLED' ? 'green' : t.status === 'SIMULATED' ? 'purple' : 'red'}>{t.status}</Badge>
-                        <Badge color="blue">↔</Badge>
-                        <span className="text-gray-300 text-xs">{t.label}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {t.pnl != null && <span className={`text-xs font-mono ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(4)}</span>}
-                        <span className="text-gray-500 text-xs">+{t.netPct}%</span>
-                        <span className="text-gray-600 text-xs">{t.timestamp}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {arbTrades.length === 0 && quantTrades.length === 0 && (
-              <div className="text-center text-gray-600 py-16">No trades yet</div>
-            )}
+            ))}
           </div>
         )}
 
@@ -1051,39 +508,20 @@ export default function ArbitrageAgent() {
           </div>
         )}
 
-        {/* Status */}
-        {activeTab === 'status' && (
-          <div className="space-y-3 max-w-md">
-            <p className="text-gray-500 text-xs mb-2">Exchange connections</p>
-            {exchanges.map(ex => {
-              const s = exchangeStatus[ex];
-              return (
-                <div key={ex} className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-lg px-3 py-2">
-                  <span className="text-xs text-gray-300">{ex}</span>
-                  <div className="flex items-center gap-2">
-                    {s?.success && <span className="text-gray-500 text-xs">${(s.balance ?? 0).toFixed(2)}</span>}
-                    <span className={`w-2 h-2 rounded-full ${s === undefined ? 'bg-gray-600' : s?.success ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`} />
-                    <span className={`text-xs ${s === undefined ? 'text-gray-500' : s?.success ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {s === undefined ? 'Loading...' : s?.success ? 'LIVE' : s?.error ?? 'ERR'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-            <button onClick={() => { fetchStatus(); fetchBalances(); addLog('🔄 Refreshed', 'info'); }}
-              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs text-gray-300">
-              ↻ Refresh
-            </button>
-            {config && (
-              <div className="mt-4 bg-gray-900 border border-gray-800 rounded-xl p-4 text-xs text-gray-500 space-y-1">
-                <p className="text-gray-300 font-bold mb-2">Active Config</p>
-                <p>Arb pairs: <span className="text-white">{config.pairs?.join(', ')}</span></p>
-                <p>Arb exchanges: <span className="text-white">{config.arbExchanges?.join(' ↔ ')}</span></p>
-                <p>Quant coins: <span className="text-white">{config.trackedCoins?.join(', ')}</span></p>
-                <p>Min profit: <span className="text-white">{(config.minProfitThreshold * 100).toFixed(1)}%</span></p>
-                <p>Capital/trade: <span className="text-white">${config.capitalPerTrade}</span></p>
-              </div>
-            )}
+        {/* Config */}
+        {activeTab === 'config' && config && (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-xs text-gray-500 space-y-1 max-w-lg">
+            <p className="text-gray-300 font-bold mb-2">Active Config</p>
+            <p>Broker: <span className="text-white">{config.broker?.broker} ({config.broker?.paper ? 'Paper' : 'Live'})</span></p>
+            <p>Price range: <span className="text-white">${config.priceRange?.[0]} – ${config.priceRange?.[1]}</span></p>
+            <p>Min RVOL: <span className="text-white">{config.minRvol}x</span></p>
+            <p>Min change: <span className="text-white">{config.minChangePct}%</span></p>
+            <p>Min daily volume: <span className="text-white">{(config.minDailyVolume / 1e6).toFixed(1)}M shares</span></p>
+            <p>Score weights: <span className="text-white">RVOL {config.scoreWeights?.rvol} · Mom {config.scoreWeights?.momentum} · Tech {config.scoreWeights?.technical} · Float {config.scoreWeights?.float}</span></p>
+            <p>Stop loss: <span className="text-white">{(config.stopLossPct * 100).toFixed(0)}%</span> · Take profit: <span className="text-white">{(config.takeProfitPct * 100).toFixed(0)}%</span></p>
+            <p>Capital/trade: <span className="text-white">${config.capitalPerTrade}</span> (max ${config.maxPositionSize})</p>
+            <p>Max positions: <span className="text-white">{config.riskControls?.maxOpenPositions}</span> · Daily loss cap: <span className="text-white">${config.riskControls?.maxDailyLossUsd}</span></p>
+            <p>Auto-execute ≥ <span className="text-white">{(config.autoExecuteThreshold * 100).toFixed(0)}%</span> confidence</p>
           </div>
         )}
       </div>

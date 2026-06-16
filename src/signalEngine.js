@@ -1,329 +1,363 @@
 // ─────────────────────────────────────────────────────────────
-// SIGNALENGINE.JS — Generates BUY/SELL/HOLD signals
+// SIGNALENGINE.JS — Penny Stock Signal Generation
 //
-// Strategy selection based on regime:
-//   RANGING      → RSI + Bollinger Bands mean reversion
-//   TRENDING_UP  → EMA crossover + MACD momentum
-//   TRENDING_DOWN→ No longs. MACD crossdown = short signal (logged only)
-//   VOLATILE     → No new entries. Exit open positions.
+// Generates actionable BUY signals for penny stock runners.
+// Signals are ranked by confidence (0-1).
 //
-// Pairs trading (BTC/ETH, ETH/LTC, BTC/LTC):
-//   Always active regardless of regime.
-//   Fires when Z-score diverges beyond ±2 std deviations.
+// Signal Strategies:
 //
-// Signal confidence scoring:
-//   Each confirming indicator adds to the score.
-//   Score >= 0.65 = HIGH confidence → auto-execute eligible
-//   Score >= 0.45 = MEDIUM confidence → alert only
-//   Score <  0.45 = LOW → ignore
+//  1. VOLUME_SURGE — Core penny stock signal.
+//     RVOL ≥3x with price up ≥5% + technical confirmation.
+//     Confidence = runner score × catalyst multiplier.
+//
+//  2. SHORT_SQUEEZE — Squeeze pressure ≥ MODERATE.
+//     High volume-to-float ratio + parabolic intraday move.
+//     News catalyst or RVOL ≥10x gives extra conviction.
+//
+//  3. VWAP_RECLAIM — Price crosses above VWAP on volume.
+//     Entry after a dip that held VWAP as support.
+//     Requires RVOL ≥2x on the reclaim candle.
+//
+//  4. OPENING_RANGE_BREAKOUT (ORB) — Price breaks above
+//     the high of the first 15 minutes of trading.
+//     One of the most reliable intraday penny setups.
+//
+//  5. NEWS_CATALYST_PLAY — Strong catalyst (score ≥0.65)
+//     even on moderate RVOL. News-driven moves can be large.
+//
+// Confidence modifiers:
+//   News catalyst present:   × 1.20 (capped at 1.0)
+//   Short squeeze HIGH+:     × 1.15
+//   No news, low RVOL:       × 0.85
+//
+// Final confidence tiers:
+//   ≥0.75 → HIGH  — auto-execute eligible
+//   ≥0.55 → MEDIUM — alert only
+//   <0.55 → LOW   — suppress
 // ─────────────────────────────────────────────────────────────
 
-import { computeAll, zScore, rsi, bollingerBands, macd, ema } from './indicators.js';
-import { REGIMES } from './regimeDetector.js';
+import { SETTINGS } from './config.js';
+import { computeAll, vwap } from './indicators.js';
 
 export const SIGNAL_TYPES = {
   BUY:  'BUY',
   SELL: 'SELL',
   HOLD: 'HOLD',
-  EXIT: 'EXIT',  // Close existing position
+  EXIT: 'EXIT',
 };
 
-// Pairs to monitor for statistical arbitrage
-export const PAIRS_TO_WATCH = [
-  { a: 'BTC', b: 'ETH',  name: 'BTC/ETH'  },
-  { a: 'ETH', b: 'LTC',  name: 'ETH/LTC'  },
-  { a: 'BTC', b: 'LTC',  name: 'BTC/LTC'  },
-  { a: 'ETH', b: 'SOL',  name: 'ETH/SOL'  },
-  { a: 'BTC', b: 'XRP',  name: 'BTC/XRP'  },
-];
+const { STOP_LOSS_PCT, TAKE_PROFIT_PCT, TAKE_PROFIT_AGGRESSIVE, MIN_SIGNAL_SCORE } = SETTINGS;
 
-// ─── Mean reversion signal (for RANGING regime) ───────────────
-function meanReversionSignal(coin, candles, indicators) {
-  const { rsi: rsiVal, bb, macd: macdVal, volRatio, price } = indicators;
-  if (!rsiVal || !bb || !macdVal) return null;
+// ─── Helpers ──────────────────────────────────────────────────
 
+function stopLoss(price)         { return +(price * (1 - STOP_LOSS_PCT)).toFixed(4); }
+function takeProfit(price)        { return +(price * (1 + TAKE_PROFIT_PCT)).toFixed(4); }
+function takeProfitAgg(price)     { return +(price * (1 + TAKE_PROFIT_AGGRESSIVE)).toFixed(4); }
+
+function capConfidence(raw) { return +Math.min(raw, 1.0).toFixed(3); }
+
+// ─── 1. Volume Surge Signal ───────────────────────────────────
+function volumeSurgeSignal(runner, newsData, squeezeData) {
+  const { symbol, score, snapshot } = runner;
+  const { price, rvol, changePct, vwap: vwapPrice } = snapshot;
+
+  if (score.total < MIN_SIGNAL_SCORE) return null;
+
+  let confidence = score.total;
   const reasons  = [];
-  let buyScore   = 0;
-  let sellScore  = 0;
 
-  // RSI oversold (< 35 in crypto, more extreme than stock market 30)
-  if (rsiVal < 35) { buyScore  += 0.30; reasons.push(`RSI ${rsiVal} oversold`); }
-  if (rsiVal > 65) { sellScore += 0.30; reasons.push(`RSI ${rsiVal} overbought`); }
+  reasons.push(`RVOL ${rvol}x — ${rvol >= 10 ? 'explosive' : 'elevated'} volume`);
+  reasons.push(`Up ${changePct.toFixed(1)}% today`);
 
-  // Bollinger Band touch
-  if (bb.pct_b < 0.05) { buyScore  += 0.30; reasons.push(`Price at lower BB (pct_b: ${bb.pct_b})`); }
-  if (bb.pct_b > 0.95) { sellScore += 0.30; reasons.push(`Price at upper BB (pct_b: ${bb.pct_b})`); }
-
-  // MACD histogram direction confirmation
-  if (macdVal.bullish && buyScore  > 0) { buyScore  += 0.20; reasons.push('MACD bullish'); }
-  if (!macdVal.bullish && sellScore > 0) { sellScore += 0.20; reasons.push('MACD bearish'); }
-
-  // Volume confirmation (volume spike adds conviction)
-  if (volRatio && volRatio > 1.5) {
-    if (buyScore > sellScore)  { buyScore  += 0.15; reasons.push(`Vol spike ${volRatio}x`); }
-    if (sellScore > buyScore)  { sellScore += 0.15; reasons.push(`Vol spike ${volRatio}x`); }
+  if (vwapPrice > 0 && price > vwapPrice) {
+    reasons.push(`Holding above VWAP $${vwapPrice.toFixed(3)}`);
   }
 
-  // Price below VWAP = slight buy bias in ranging market
-  if (indicators.vwap && price < indicators.vwap && buyScore > 0) {
-    buyScore += 0.05;
-    reasons.push('Below VWAP');
+  // News boost
+  if (newsData?.hasCatalyst) {
+    const boost = newsData.catalystScore * 0.20;
+    confidence  = Math.min(confidence + boost, 1.0);
+    reasons.push(`Catalyst: ${newsData.catalysts[0]?.label ?? 'recent news'}`);
   }
 
- if (buyScore >= 0.45) {
-      const roundTripFee = 0.002;
-      const tpDistance = Math.abs(bb.middle - price) / price;
-      if (tpDistance < roundTripFee * 3) return null;
-
-      return {
-        type:       SIGNAL_TYPES.BUY,
-        strategy:   'mean_reversion',
-        coin,
-        confidence: +Math.min(buyScore, 1).toFixed(3),
-        reasons,
-        price,
-        takeProfit: +bb.middle.toFixed(6),
-        stopLoss:   +(bb.lower * 0.995).toFixed(6),
-      };
-    }
-
-  if (sellScore >= 0.45) {
-    return {
-      type:       SIGNAL_TYPES.SELL,
-      strategy:   'mean_reversion',
-      coin,
-      confidence: +Math.min(sellScore, 1).toFixed(3),
-      reasons,
-      price,
-      takeProfit: +bb.middle.toFixed(6),
-      stopLoss:   +(bb.upper * 1.005).toFixed(6),
-    };
+  // Squeeze boost
+  if (squeezeData?.isSqueezePlay && squeezeData.intensity !== 'LOW') {
+    const squeezeMult = { MODERATE: 1.08, HIGH: 1.12, EXTREME: 1.18 }[squeezeData.intensity] ?? 1;
+    confidence = Math.min(confidence * squeezeMult, 1.0);
+    reasons.push(`Squeeze pressure: ${squeezeData.intensity} (${squeezeData.reasons[0] ?? ''})`);
   }
 
-  return null;
+  return {
+    type:       SIGNAL_TYPES.BUY,
+    strategy:   'volume_surge',
+    symbol,
+    confidence: capConfidence(confidence),
+    reasons,
+    price,
+    stopLoss:    stopLoss(price),
+    takeProfit:  takeProfit(price),
+    takeProfitAggressive: takeProfitAgg(price),
+    score,
+    rvol:        runner.rvol,
+    changePct:   runner.changePct,
+    vwap:        vwapPrice,
+    dailyHigh:   snapshot.dailyHigh,
+    dailyLow:    snapshot.dailyLow,
+    volume:      snapshot.volume,
+  };
 }
 
-// ─── Trend following signal (for TRENDING_UP regime) ─────────
-function trendFollowingSignal(coin, candles, indicators, candles1h) {
-  const { rsi: rsiVal, macd: macdVal, ema9, ema21, ema50, bb, volRatio, price, atr } = indicators;
-  if (!rsiVal || !macdVal || !ema9 || !ema21) return null;
+// ─── 2. Short Squeeze Signal ──────────────────────────────────
+function shortSqueezeSignal(runner, newsData, squeezeData) {
+  if (!squeezeData?.isSqueezePlay) return null;
+  if (squeezeData.squeezeScore < 0.35) return null;
 
-  const reasons = [];
-  let score     = 0;
+  const { symbol, snapshot } = runner;
+  const { price, rvol, changePct } = snapshot;
 
-  // 4h EMA stack confirms trend exists (regime filter)
-  const prevCandles = candles.slice(0, -1);
-  const prevEma9    = ema(prevCandles, 9);
-  const prevEma21   = ema(prevCandles, 21);
-  const crossedUp   = prevEma9 && prevEma21 && prevEma9 <= prevEma21 && ema9 > ema21;
+  let confidence = squeezeData.squeezeScore;
+  const reasons  = [...squeezeData.reasons];
 
-  if (crossedUp)                  { score += 0.25; reasons.push('4h EMA 9 crossed above EMA 21'); }
-  else if (ema9 > ema21)          { score += 0.10; reasons.push('4h EMA 9 above EMA 21'); }
-  if (ema50 && price > ema50)     { score += 0.15; reasons.push('Price above 4h EMA 50'); }
-  if (macdVal.bullish)            { score += 0.10; reasons.push('4h MACD bullish'); }
-
-  // Two-timeframe entry: require 1h RSI pullback below 40
-  // This gets us into the trend at a better price instead of chasing
-  if (candles1h && candles1h.length >= 14) {
-    const rsi1h = rsi(candles1h.slice(0, -1), 14); // closed 1h candles only
-    if (rsi1h !== null) {
-      if (rsi1h < 40) {
-        score += 0.35;
-        reasons.push(`1h RSI ${rsi1h} pullback — good entry on dip`);
-      } else if (rsi1h < 50) {
-        score += 0.15;
-        reasons.push(`1h RSI ${rsi1h} mild pullback`);
-      } else {
-        // No pullback — trend may be extended, reduce score
-        score -= 0.10;
-        reasons.push(`1h RSI ${rsi1h} — no pullback, entry may be late`);
-      }
-    }
+  // News multiplier — squeeze + catalyst is extremely powerful
+  if (newsData?.hasCatalyst) {
+    confidence = Math.min(confidence * 1.25, 1.0);
+    reasons.push(`Catalyst: ${newsData.catalysts[0]?.label ?? 'recent news'}`);
   }
 
-  if (volRatio && volRatio > 1.3) { score += 0.10; reasons.push(`Vol ${volRatio}x`); }
-  if (macdVal.crossedUp)          { score += 0.15; reasons.push('4h MACD crossed up'); }
-
-  if (score >= 0.45) {
-    const atrVal = atr || (bb ? (bb.upper - bb.lower) / 4 : price * 0.02);
-    return {
-      type:       SIGNAL_TYPES.BUY,
-      strategy:   'trend_following',
-      coin,
-      confidence: +Math.min(score, 1).toFixed(3),
-      reasons,
-      price,
-      takeProfit: +(price + atrVal * 2).toFixed(6),
-      stopLoss:   +(price - atrVal * 1).toFixed(6),
-    };
+  // RVOL multiplier
+  if (rvol >= 10) {
+    confidence = Math.min(confidence * 1.15, 1.0);
+    reasons.push(`${rvol}x volume — shorts aggressively covering`);
   }
 
-  return null;
+  if (confidence < MIN_SIGNAL_SCORE) return null;
+
+  return {
+    type:       SIGNAL_TYPES.BUY,
+    strategy:   'short_squeeze',
+    symbol,
+    confidence: capConfidence(confidence),
+    reasons,
+    price,
+    stopLoss:    stopLoss(price),
+    takeProfit:  takeProfitAgg(price),    // Squeezes can run hard — target aggressive level
+    takeProfitAggressive: +(price * 2).toFixed(4),  // 100% target for extreme squeezes
+    squeezeScore:     squeezeData.squeezeScore,
+    squeezeIntensity: squeezeData.intensity,
+    rvol,
+    changePct,
+    volume:  snapshot.volume,
+    dailyHigh: snapshot.dailyHigh,
+    dailyLow:  snapshot.dailyLow,
+  };
 }
 
-// ─── Pairs trading signal ─────────────────────────────────────
-function pairsSignal(pair, candlesA, candlesB) {
-  if (!candlesA || !candlesB) return null;
+// ─── 3. VWAP Reclaim Signal ───────────────────────────────────
+function vwapReclaimSignal(symbol, minuteBars, snapshot, newsData) {
+  if (!minuteBars || minuteBars.length < 20) return null;
 
-  const z = zScore(candlesA, candlesB, 30);
-  if (z === null) return null;
+  const price    = snapshot.price;
+  const vwapVal  = snapshot.vwap;
+  if (!vwapVal || vwapVal <= 0) return null;
 
-  const priceA = candlesA[candlesA.length - 1].close;
-  const priceB = candlesB[candlesB.length - 1].close;
+  // Price must now be above VWAP
+  if (price <= vwapVal) return null;
 
-  // Z > +2: A is overpriced relative to B → sell A, buy B
-  if (z > 2.0) {
-    return {
-      type:       SIGNAL_TYPES.SELL,
-      strategy:   'pairs_trading',
-      pair:       pair.name,
-      coinA:      pair.a,
-      coinB:      pair.b,
-      action:     `Sell ${pair.a}, Buy ${pair.b}`,
-      zScore:     z,
-      confidence: +Math.min((z - 2) / 2 + 0.5, 1).toFixed(3),
-      priceA,
-      priceB,
-      reasons:    [`Z-score ${z} > 2.0 — ${pair.a} overpriced vs ${pair.b}`],
-      // Exit when Z-score reverts toward 0
-      exitZScore: 0.5,
-    };
+  // Check that the recent low was below VWAP (pullback + reclaim pattern)
+  const recent   = minuteBars.slice(-15);
+  const hadDip   = recent.some(b => b.low < vwapVal);
+  if (!hadDip) return null;
+
+  // Volume on reclaim should be above average
+  const indicators = computeAll(minuteBars.slice(-30));
+  if (!indicators.volRatio || indicators.volRatio < 1.5) return null;
+
+  let confidence = 0.52;
+  const reasons  = [`Price reclaimed VWAP $${vwapVal.toFixed(3)}`];
+  reasons.push(`Volume ${indicators.volRatio.toFixed(1)}x on reclaim`);
+
+  if (newsData?.hasCatalyst) {
+    confidence = Math.min(confidence + 0.12, 1.0);
+    reasons.push(`Catalyst: ${newsData.catalysts[0]?.label ?? 'recent news'}`);
+  }
+  if (snapshot.rvol >= 5) {
+    confidence = Math.min(confidence + 0.08, 1.0);
+    reasons.push(`RVOL ${snapshot.rvol}x backing the reclaim`);
   }
 
-  // Z < -2: A is underpriced relative to B → buy A, sell B
-  if (z < -2.0) {
-    return {
-      type:       SIGNAL_TYPES.BUY,
-      strategy:   'pairs_trading',
-      pair:       pair.name,
-      coinA:      pair.a,
-      coinB:      pair.b,
-      action:     `Buy ${pair.a}, Sell ${pair.b}`,
-      zScore:     z,
-      confidence: +Math.min((Math.abs(z) - 2) / 2 + 0.5, 1).toFixed(3),
-      priceA,
-      priceB,
-      reasons:    [`Z-score ${z} < -2.0 — ${pair.a} underpriced vs ${pair.b}`],
-      exitZScore: -0.5,
-    };
-  }
+  if (confidence < MIN_SIGNAL_SCORE) return null;
 
-  return null;
+  return {
+    type:       SIGNAL_TYPES.BUY,
+    strategy:   'vwap_reclaim',
+    symbol,
+    confidence: capConfidence(confidence),
+    reasons,
+    price,
+    stopLoss:    +(vwapVal * 0.98).toFixed(4),    // Stop just below VWAP
+    takeProfit:  takeProfit(price),
+    takeProfitAggressive: takeProfitAgg(price),
+    vwap: vwapVal,
+    volRatio: indicators.volRatio,
+    dailyHigh: snapshot.dailyHigh,
+    dailyLow:  snapshot.dailyLow,
+    volume:    snapshot.volume,
+  };
 }
 
-// ─── Main: generate all signals ───────────────────────────────
-export function generateSignals(candleMap, regimes, candles1hMap = {}) {
+// ─── 4. Opening Range Breakout (ORB) ─────────────────────────
+// First 15 minutes of trading sets the opening range.
+// Breakout above the high of that range = bullish ORB signal.
+function orbSignal(symbol, minuteBars, snapshot, newsData) {
+  if (!minuteBars || minuteBars.length < 20) return null;
+
+  const price = snapshot.price;
+
+  // Identify opening range: first 15 min bars (sorted chronologically)
+  // Bars are sorted asc by time, so first bars = market open
+  const todayStart = minuteBars.findIndex(b => {
+    const d = new Date(b.timestamp);
+    return d.getUTCHours() >= 13 && d.getUTCMinutes() >= 30;  // 9:30 AM ET = 13:30 UTC
+  });
+
+  const orbBars = todayStart >= 0
+    ? minuteBars.slice(todayStart, todayStart + 15)
+    : minuteBars.slice(0, 15);
+
+  if (orbBars.length < 5) return null;
+
+  const orbHigh = Math.max(...orbBars.map(b => b.high));
+  const orbLow  = Math.min(...orbBars.map(b => b.low));
+
+  // Must be breaking above ORB high now
+  if (price <= orbHigh * 1.002) return null;  // 0.2% buffer to avoid fakeouts
+
+  // Check volume is elevated on the breakout
+  const indicators = computeAll(minuteBars.slice(-30));
+  if (!indicators.volRatio || indicators.volRatio < 1.5) return null;
+
+  let confidence = 0.58;
+  const reasons  = [
+    `ORB breakout: $${price.toFixed(3)} above opening range high $${orbHigh.toFixed(3)}`,
+    `Opening range: $${orbLow.toFixed(3)} – $${orbHigh.toFixed(3)}`,
+  ];
+
+  if (newsData?.hasCatalyst) {
+    confidence = Math.min(confidence + 0.15, 1.0);
+    reasons.push(`Catalyst: ${newsData.catalysts[0]?.label ?? 'recent news'}`);
+  }
+  if (snapshot.rvol >= 5) {
+    confidence = Math.min(confidence + 0.10, 1.0);
+    reasons.push(`RVOL ${snapshot.rvol}x on breakout`);
+  }
+  if (indicators.volRatio >= 2) {
+    confidence = Math.min(confidence + 0.05, 1.0);
+    reasons.push(`Volume ${indicators.volRatio.toFixed(1)}x surging`);
+  }
+
+  if (confidence < MIN_SIGNAL_SCORE) return null;
+
+  return {
+    type:       SIGNAL_TYPES.BUY,
+    strategy:   'opening_range_breakout',
+    symbol,
+    confidence: capConfidence(confidence),
+    reasons,
+    price,
+    stopLoss:   +(orbLow * 0.99).toFixed(4),       // Stop below ORB low
+    takeProfit:  takeProfit(price),
+    takeProfitAggressive: takeProfitAgg(price),
+    orbHigh,
+    orbLow,
+    volRatio:   indicators.volRatio,
+    dailyHigh:  snapshot.dailyHigh,
+    dailyLow:   snapshot.dailyLow,
+    volume:     snapshot.volume,
+  };
+}
+
+// ─── 5. News Catalyst Play ────────────────────────────────────
+function newsCatalystSignal(symbol, snapshot, newsData) {
+  if (!newsData?.hasCatalyst) return null;
+  if (newsData.catalystScore < 0.55) return null;
+  if (snapshot.changePct < 2) return null;       // Must have some price follow-through
+
+  const { price, rvol, changePct } = snapshot;
+  let confidence = Math.min(newsData.catalystScore * 0.80, 0.80);
+  const reasons  = [
+    `${newsData.catalysts[0]?.label ?? 'Catalyst'}: "${newsData.topHeadline?.slice(0, 80)}..."`,
+    `Catalyst score: ${(newsData.catalystScore * 100).toFixed(0)}/100`,
+  ];
+
+  if (newsData.topAgeHours < 4)  reasons.push(`Breaking news (${newsData.topAgeHours.toFixed(1)}h ago)`);
+  if (rvol && rvol >= 3)         reasons.push(`RVOL ${rvol}x — market reacting to news`);
+  if (changePct > 0)             reasons.push(`Up ${changePct.toFixed(1)}% today`);
+
+  if (rvol >= 5) confidence = Math.min(confidence + 0.08, 1.0);
+  if (rvol >= 10) confidence = Math.min(confidence + 0.08, 1.0);
+
+  if (confidence < MIN_SIGNAL_SCORE) return null;
+
+  return {
+    type:       SIGNAL_TYPES.BUY,
+    strategy:   'news_catalyst',
+    symbol,
+    confidence: capConfidence(confidence),
+    reasons,
+    price,
+    stopLoss:    stopLoss(price),
+    takeProfit:  takeProfit(price),
+    takeProfitAggressive: takeProfitAgg(price),
+    catalystScore: newsData.catalystScore,
+    topHeadline:   newsData.topHeadline,
+    topSource:     newsData.topSource,
+    rvol,
+    changePct,
+    dailyHigh:  snapshot.dailyHigh,
+    dailyLow:   snapshot.dailyLow,
+    volume:     snapshot.volume,
+  };
+}
+
+// ─── Main: generate signals for all runners ───────────────────
+export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBarsMap = {}) {
   const signals = [];
-  const coins   = Object.keys(candleMap);
 
-  // Macro filter: if BTC is trending down or volatile, suppress all mean reversion longs
-  const btcRegime = regimes['BTC'];
-  const btcBearish = btcRegime && (
-    btcRegime.regime === REGIMES.TRENDING_DOWN ||
-    btcRegime.regime === REGIMES.VOLATILE
-  );
+  for (const runner of runners) {
+    const { symbol, snapshot } = runner;
+    const newsData    = newsMap[symbol]    ?? null;
+    const squeezeData = squeezeMap[symbol] ?? null;
+    const minuteBars  = minuteBarsMap[symbol] ?? null;
 
-  // Single-asset signals
-  for (const coin of coins) {
-    const candles = candleMap[coin];
-    if (!candles || candles.length < 30) continue;
+    // Skip if news is bearish (dilution, SEC probe, etc.)
+    if (newsData?.isBearish) continue;
 
-    // CRITICAL: Remove the last candle — it hasn't closed yet.
-    // Signals must only be generated on confirmed closed candles
-    // to prevent "phantom" signals that vanish before the hour ends.
-    const closedCandles = candles.slice(0, -1);
-    if (closedCandles.length < 30) continue;
+    // Generate all applicable signals for this runner
+    const candidates = [
+      volumeSurgeSignal(runner, newsData, squeezeData),
+      shortSqueezeSignal(runner, newsData, squeezeData),
+      vwapReclaimSignal(symbol, minuteBars, snapshot, newsData),
+      orbSignal(symbol, minuteBars, snapshot, newsData),
+      newsCatalystSignal(symbol, snapshot, newsData),
+    ].filter(Boolean);
 
-    const indicators = computeAll(closedCandles);
-    const regime     = regimes[coin];
-    if (!regime) continue;
-
-    let signal = null;
-
-    switch (regime.regime) {
-      case REGIMES.RANGING:
-        if (!btcBearish) {
-          signal = meanReversionSignal(coin, closedCandles, indicators);
-        } else {
-          signal = {
-            type:       SIGNAL_TYPES.HOLD,
-            strategy:   'macro_filter',
-            coin,
-            confidence: 0,
-            reasons:    ['BTC macro downtrend — suppressing mean reversion longs'],
-            price:      indicators.price,
-          };
-        }
-        break;
-      case REGIMES.TRENDING_UP:
-        // Disabled — 0% WR across 38 live sim trades confirms backtest finding
-        signal = null;
-        break;
-      case REGIMES.VOLATILE:
-        // In volatile conditions — no new entries, flag for exit
-        signal = {
-          type:       SIGNAL_TYPES.HOLD,
-          strategy:   'volatility_pause',
-          coin,
-          confidence: regime.confidence,
-          reasons:    [`Volatile regime — pausing new entries (${regime.reason})`],
-          price:      indicators.price,
-        };
-        break;
-      case REGIMES.TRENDING_DOWN:
-        signal = {
-          type:       SIGNAL_TYPES.HOLD,
-          strategy:   'trend_down_avoid',
-          coin,
-          confidence: regime.confidence,
-          reasons:    [`Downtrend — avoiding longs (${regime.reason})`],
-          price:      indicators.price,
-        };
-        break;
-    }
-
-    if (signal) {
+    // Per symbol: take the highest-confidence signal only
+    if (candidates.length) {
+      const best = candidates.sort((a, b) => b.confidence - a.confidence)[0];
       signals.push({
-        ...signal,
-        regime:    regime.regime,
-        timestamp: Date.now(),
-        indicators: {
-          rsi:      indicators.rsi,
-          bbPctB:   indicators.bb?.pct_b,
-          macdHist: indicators.macd?.histogram,
-          ema9:     indicators.ema9,
-          ema21:    indicators.ema21,
-          volRatio: indicators.volRatio,
-          atr:      indicators.atr,
-        },
-      });
-    }
-  }
-
-  // Pairs trading signals (regime-independent)
-  for (const pair of PAIRS_TO_WATCH) {
-    const candlesA = candleMap[pair.a];
-    const candlesB = candleMap[pair.b];
-    if (!candlesA || !candlesB) continue;
-
-    const candlesAClosed = candlesA.slice(0, -1);
-    const candlesBClosed = candlesB.slice(0, -1);
-    const signal = pairsSignal(pair, candlesAClosed, candlesBClosed);
-    if (signal) {
-      signals.push({
-        ...signal,
-        timestamp: Date.now(),
+        ...best,
+        timestamp:    Date.now(),
+        tier:         best.confidence >= 0.75 ? 'HIGH' : best.confidence >= 0.55 ? 'MEDIUM' : 'LOW',
+        otherSignals: candidates.slice(1).map(s => ({ strategy: s.strategy, confidence: s.confidence })),
       });
     }
   }
 
   // Sort by confidence descending
-  const typeOrder = { BUY: 0, SELL: 1, EXIT: 2, HOLD: 3 };
-  const sorted = signals.sort((a, b) => {
-    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
-    return (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9);
-  });
-
-  
-  return sorted;
+  return signals
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, SETTINGS.MAX_SIGNALS);
 }
+
+// ─── Compatibility export (old server.js API shape) ──────────
+export { generateSignals as default };

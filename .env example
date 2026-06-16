@@ -1,14 +1,16 @@
-# Copy this file to .env and add your REAL API keys
+# Copy this file to .env and add your REAL Alpaca API keys
 # Never commit .env to GitHub!
+#
+# Get keys at https://alpaca.markets (free paper trading account)
 
-BINANCE_API_KEY=
-BINANCE_SECRET_KEY=
+ALPACA_API_KEY=
+ALPACA_SECRET_KEY=
 
-COINBASE_API_KEY=
-COINBASE_SECRET_KEY=
+# Paper trading is ON by default. Set to "false" ONLY for live trading.
+ALPACA_PAPER=true
 
-KRAKEN_API_KEY=
-KRAKEN_SECRET_KEY=
+# Market data feed: "iex" (free) or "sip" (paid consolidated tape)
+ALPACA_FEED=iex
 
+# Risk limit — max dollars per single position
 MAX_TRADE_AMOUNT_USD=20
-MIN_PROFIT_THRESHOLD=0.002
