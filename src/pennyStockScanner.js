@@ -202,7 +202,7 @@ export async function scanRunners() {
     })
     .map(([sym]) => sym);
 
-  console.log(`[Scanner] ${pennySymbols.length} penny stock candidates (price + volume filter)`);
+  console.log(`[Scanner] ${pennySymbols.length} penny stock candidates (price $${PRICE_MIN}–$${PRICE_MAX}, vol ≥${MIN_DAILY_VOLUME.toLocaleString()} on ${SETTINGS.DATA_FEED} feed)`);
 
   if (!pennySymbols.length) return [];
 

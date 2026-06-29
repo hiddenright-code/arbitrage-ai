@@ -120,14 +120,21 @@ export async function fetchDailyBars(symbol, days = 30) {
   if (cached && now - cached.lastFetch < CACHE_TTL) return cached.bars;
 
   try {
+    // A `start` is REQUIRED here: without it, Alpaca's daily-bars default
+    // window returns only TODAY's bar — which silently broke RVOL for every
+    // symbol (calculateRvol saw <5 bars and fell back to 1.0, so nothing ever
+    // cleared RVOL ≥3x). Bound the window generously and take the most recent
+    // days+1 bars with sort=desc, then flip to ascending. (asc+limit would
+    // return the OLDEST bars in the window, not the newest — also wrong.)
+    const start = new Date(now - (days * 2 + 10) * 86_400_000).toISOString().slice(0, 10);
     const data = await alpacaGet(
-      `/v2/stocks/${symbol}/bars?timeframe=1Day&limit=${days + 1}&feed=${FEED}&sort=asc`
+      `/v2/stocks/${symbol}/bars?timeframe=1Day&start=${start}&limit=${days + 1}&feed=${FEED}&sort=desc`
     );
     const bars = (data.bars ?? []).map(b => ({
       timestamp: new Date(b.t).getTime(),
       open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
       vwap: b.vw ?? 0,
-    }));
+    })).reverse();   // desc (newest-first) → ascending (today last)
     barCache[symbol] = { bars, lastFetch: now };
     return bars;
   } catch (err) {

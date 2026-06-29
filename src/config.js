@@ -11,7 +11,14 @@ export const SETTINGS = {
   // ── Penny Stock Universe Filters ─────────────────────────────
   PRICE_MIN:          0.10,       // Minimum price ($)
   PRICE_MAX:          5.00,       // Maximum price — penny stock threshold
-  MIN_DAILY_VOLUME:   500_000,    // 500K min shares/day (avoids illiquid traps)
+  // Minimum daily volume floor. This is an ABSOLUTE pre-filter (RVOL is the
+  // real gate downstream). It must be scaled to the data feed: the free IEX
+  // feed only prints ~2-3% of consolidated tape, so a SIP-scale 500K floor
+  // rejects nearly every real penny runner (a name up +300% can show <150K
+  // on IEX). On IEX we drop the floor and lean on RVOL; on SIP we use the
+  // full consolidated threshold. See VOLUME_FLOOR getter below.
+  MIN_DAILY_VOLUME_SIP: 500_000,  // consolidated-tape floor
+  MIN_DAILY_VOLUME_IEX:  20_000,  // IEX-only floor (~2-3% of tape)
   TOP_ACTIVE_STOCKS:  100,        // Scan top N most-active stocks for candidates
 
   // ── Runner Criteria (all must pass to be a candidate) ────────
@@ -186,3 +193,10 @@ export const SETTINGS = {
   // 'sip' = paid consolidated tape
   DATA_FEED: process.env.ALPACA_FEED || 'iex',
 };
+
+// Effective absolute volume floor for the active feed (see the IEX/SIP
+// thresholds above). Derived here so every consumer — scanner pre-filter
+// and /api/config — sees one feed-correct value.
+SETTINGS.MIN_DAILY_VOLUME = SETTINGS.DATA_FEED === 'sip'
+  ? SETTINGS.MIN_DAILY_VOLUME_SIP
+  : SETTINGS.MIN_DAILY_VOLUME_IEX;

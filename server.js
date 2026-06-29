@@ -301,7 +301,8 @@ app.get('/api/config', (req, res) => {
     priceRange:        [SETTINGS.PRICE_MIN, SETTINGS.PRICE_MAX],
     minRvol:           SETTINGS.MIN_RVOL,
     minChangePct:      SETTINGS.MIN_CHANGE_PCT,
-    minDailyVolume:    SETTINGS.MIN_DAILY_VOLUME,
+    dataFeed:          SETTINGS.DATA_FEED,
+    minDailyVolume:    SETTINGS.MIN_DAILY_VOLUME,   // feed-aware (IEX vs SIP)
     scoreWeights:      SETTINGS.SCORE_WEIGHTS,
     minSignalScore:    SETTINGS.MIN_SIGNAL_SCORE,
     autoExecuteThreshold: SETTINGS.AUTO_EXECUTE_THRESHOLD,
