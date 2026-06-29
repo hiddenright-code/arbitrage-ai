@@ -18,6 +18,10 @@ import {
   testConnection, getMarketClock, getBrokerInfo,
 } from './src/exchangeClient.js';
 import { getMarketWindow } from './src/marketHours.js';
+import {
+  scanCatalysts, updateConfirmation,
+  getWatchlist, getWatchlistStats,
+} from './src/catalystWatchlist.js';
 import { executeLiveTrade, emergencyStop } from './src/liveExecutor.js';
 import { scanRunners } from './src/pennyStockScanner.js';
 import { analyzeNewsMulti } from './src/newsAnalyzer.js';
@@ -276,6 +280,20 @@ app.get('/api/market-status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/watchlist — the multi-day catalyst watchlist (slow layer).
+app.get('/api/watchlist', (req, res) => {
+  res.json({ ...getWatchlistStats(), watchlist: getWatchlist() });
+});
+
+// POST /api/catalysts/scan — force an immediate catalyst news sweep.
+app.post('/api/catalysts/scan', async (req, res) => {
+  try {
+    const result = await scanCatalysts();
+    await updateConfirmation();
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/config', (req, res) => {
   res.json({
     broker:            getBrokerInfo(),
@@ -341,7 +359,8 @@ app.listen(PORT, () => {
   console.log(`   Risk:       max ${SETTINGS.MAX_OPEN_POSITIONS} positions | $${SETTINGS.MAX_DAILY_LOSS_USD}/day loss cap\n`);
 
   // Warm the scan cache on boot (respects the market-hours gate)
-  console.log(`   Gate:       ${SETTINGS.MARKET_GATE_ENABLED ? `ON (${SETTINGS.SCAN_EXTENDED_HOURS ? 'extended hours 04:00–20:00 ET' : 'regular hours 09:30–16:00 ET'})` : 'OFF (always scan)'}\n`);
+  console.log(`   Gate:       ${SETTINGS.MARKET_GATE_ENABLED ? `ON (${SETTINGS.SCAN_EXTENDED_HOURS ? 'extended hours 04:00–20:00 ET' : 'regular hours 09:30–16:00 ET'})` : 'OFF (always scan)'}`);
+  console.log(`   Catalyst:   ${SETTINGS.CATALYST.ENABLED ? `watchlist ON (news sweep every ${Math.round(SETTINGS.CATALYST.SCAN_INTERVAL_MS / 60000)}m)` : 'OFF'}\n`);
   getScan(true).then(s => {
     if (s.marketStatus && !s.marketStatus.active) {
       console.log(`⏸️  Scanner idle — ${s.marketStatus.reason} (${s.marketStatus.etTime})`);
@@ -349,4 +368,21 @@ app.listen(PORT, () => {
       console.log(`✅ Initial scan: ${s.runners.length} runners, ${s.signals.length} signals`);
     }
   }).catch(e => console.error('Initial scan failed:', e.message));
+
+  // ─── Catalyst watchlist — the always-on "slow" layer ────────
+  // Runs regardless of the intraday gate: catalysts break overnight and
+  // pre-market, and a confirmed name feeds the scanner the moment it opens.
+  if (SETTINGS.CATALYST.ENABLED) {
+    const sweep = async () => {
+      try {
+        const r = await scanCatalysts();
+        await updateConfirmation();
+        if (r.added?.length || r.flagged?.length) {
+          console.log(`📰 Catalyst sweep: +${r.added.length} new${r.flagged.length ? `, ${r.flagged.length} dilution-flagged` : ''} | watchlist ${r.size}`);
+        }
+      } catch (e) { console.error('[Catalyst] sweep failed:', e.message); }
+    };
+    sweep();   // initial
+    setInterval(sweep, SETTINGS.CATALYST.SCAN_INTERVAL_MS);
+  }
 });

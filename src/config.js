@@ -121,6 +121,24 @@ export const SETTINGS = {
     TIERS: { EXTREME: 0.75, HIGH: 0.55, MODERATE: 0.35 },
   },
 
+  // ── Catalyst Watchlist (hybrid model — slow layer) ───────────
+  // Proactively scans the market-wide news feed for fresh catalysts on
+  // penny-priced names and tracks them over multiple days. A name that
+  // "confirms" (holds gains / follows through) feeds the intraday scanner
+  // and boosts its signal — so a catalyst is tracked BEFORE it shows the
+  // volume the runner scanner keys off. Entries still trigger intraday.
+  CATALYST: {
+    ENABLED:        process.env.CATALYST_WATCHLIST !== 'false',
+    NEWS_FEED_LIMIT: Number(process.env.CATALYST_NEWS_LIMIT) || 50,
+    MIN_CATALYST_SCORE: 0.55,   // bullish strength required to add a name
+    PRICE_MAX:      Number(process.env.CATALYST_PRICE_MAX) || 10,  // track a bit above $5 to catch pre-run names
+    WATCHLIST_MAX_DAYS: 10,     // expire a name after N trading days w/o a run
+    MAX_WATCHLIST:  60,
+    FADE_DROP_PCT:  0.15,       // >15% below catalyst price ⇒ FADING
+    SCAN_INTERVAL_MS: Number(process.env.CATALYST_SCAN_MS) || 10 * 60 * 1000,  // slow layer cadence
+    PERSIST_PATH:   process.env.CATALYST_PERSIST_PATH || 'data/watchlist.json',
+  },
+
   // ── Fees ─────────────────────────────────────────────────────
   FEES: { Alpaca: 0.0 },          // Commission-free
 

@@ -79,7 +79,9 @@ const BEARISH_KEYWORDS = [
 ];
 
 // ─── Score a single article ───────────────────────────────────
-function scoreArticle(article) {
+// Exported so the catalyst watchlist can reuse the exact same keyword
+// scoring on the market-wide news feed.
+export function scoreArticle(article) {
   const text      = `${article.headline ?? ''} ${article.summary ?? ''}`.toLowerCase();
   const createdAt = new Date(article.created_at).getTime();
   const ageHours  = (Date.now() - createdAt) / 3_600_000;

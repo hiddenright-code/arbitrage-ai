@@ -332,9 +332,13 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
     const newsData    = newsMap[symbol]    ?? null;
     const squeezeData = squeezeMap[symbol] ?? null;
     const minuteBars  = minuteBarsMap[symbol] ?? null;
+    const catalyst    = runner.catalyst ?? null;   // multi-day watchlist context
 
     // Skip if news is bearish (dilution, SEC probe, etc.)
     if (newsData?.isBearish) continue;
+    // Dilution kill-switch — a watchlist name flagged for an offering is
+    // the classic run-killer; never signal it regardless of momentum.
+    if (catalyst?.dilutionFlag || catalyst?.status === 'DILUTION_RISK') continue;
 
     // Generate all applicable signals for this runner
     const candidates = [
@@ -348,6 +352,23 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
     // Per symbol: take the highest-confidence signal only
     if (candidates.length) {
       const best = candidates.sort((a, b) => b.confidence - a.confidence)[0];
+
+      // Multi-day catalyst boost — a name whose catalyst has already been
+      // confirming/holding for days is higher conviction than a same-day
+      // pop. Applied here so it lifts whichever strategy fired.
+      if (catalyst && (catalyst.status === 'CONFIRMED' || catalyst.status === 'CONFIRMING')) {
+        const mult = catalyst.status === 'CONFIRMED' ? 1.12 : 1.06;
+        best.confidence = capConfidence(best.confidence * mult);
+        best.reasons = [
+          `Catalyst ${catalyst.status.toLowerCase()} ${catalyst.dayCount}d: ${catalyst.catalyst?.label ?? 'news'} (${catalyst.confirmation?.followThroughPct ?? 0}% since)`,
+          ...best.reasons,
+        ];
+        best.catalystContext = {
+          status: catalyst.status, dayCount: catalyst.dayCount,
+          label: catalyst.catalyst?.label, followThroughPct: catalyst.confirmation?.followThroughPct,
+        };
+      }
+
       signals.push({
         ...best,
         timestamp:    Date.now(),

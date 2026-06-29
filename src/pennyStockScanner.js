@@ -54,6 +54,7 @@ import {
   fetchMinuteBars,
   calculateRvol,
 } from './priceHistory.js';
+import { getActiveSymbols, getCatalystContext } from './catalystWatchlist.js';
 
 const { SCORE_WEIGHTS, PRICE_MIN, PRICE_MAX, MIN_DAILY_VOLUME,
         MIN_RVOL, MIN_CHANGE_PCT, MAX_RUNNERS } = SETTINGS;
@@ -186,8 +187,11 @@ export async function scanRunners() {
     return [];
   }
 
-  // 2. Pull snapshots for all of them in one API call
-  const symbols   = mostActive.map(s => s.symbol);
+  // 2. Pull snapshots for the most-active set PLUS any catalyst-watchlist
+  //    names (hybrid model — a confirmed catalyst gets tracked intraday
+  //    even before it cracks the most-actives list).
+  const watchlistSymbols = getActiveSymbols();
+  const symbols   = [...new Set([...mostActive.map(s => s.symbol), ...watchlistSymbols])];
   const snapshots = await fetchSnapshots(symbols);
 
   // 3. Pre-filter by penny stock criteria (price + volume)
@@ -234,6 +238,7 @@ export async function scanRunners() {
           tier,
           score,
           snapshot: snap,
+          catalyst:      getCatalystContext(symbol),   // null unless on the watchlist
           rvol,
           changePct:     snap.changePct,
           price:         snap.price,
