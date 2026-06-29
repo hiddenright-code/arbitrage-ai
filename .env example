@@ -23,12 +23,17 @@ MAX_TRADE_AMOUNT_USD=20
 # ─────────────────────────────────────────────────────────────
 
 # ORTEX — real-time estimated short interest (paid). The squeeze edge.
-# Sign up at https://www.ortex.com → API access in account settings.
+# Get an API key at https://app.ortex.com/apis
+# TIP: use the free trial key  ORTEX_API_KEY=TEST  to verify wiring first.
 ORTEX_API_KEY=
-# Override only if your plan uses a different host/path/exchange:
-# ORTEX_BASE_URL=https://api.ortex.com
-# ORTEX_SI_PATH=/api/v1/short_interest/{exchange}/{ticker}
+# Set the exchange your tickers trade on (NASDAQ, NYSE, AMEX, ...):
 # ORTEX_EXCHANGE=NASDAQ
+# Override these only if ORTEX changes its v1 endpoints:
+# ORTEX_BASE_URL=https://api.ortex.com
+# ORTEX_SI_PATH=/api/v1/{exchange}/{ticker}/short_interest
+# ORTEX_DTC_PATH=/api/v1/stock/{exchange}/{ticker}/dtc
+# ORTEX_CTB_PATH=/api/v1/stock/{exchange}/{ticker}/ctb/all
+# ORTEX_AVAIL_PATH=/api/v1/stock/{exchange}/{ticker}/availability
 
 # FINRA — official consolidated short interest (free, OAuth2, lagged).
 # Register an API account at https://developer.finra.org and create

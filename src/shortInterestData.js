@@ -66,50 +66,87 @@ function pickNum(obj, ...keys) {
 }
 
 // ─── ORTEX ────────────────────────────────────────────────────
-async function fetchOrtex(symbol) {
-  if (!CFG.ORTEX_ENABLED) return null;
+// ORTEX v1 spreads the fuel metrics across FOUR endpoints (this matches
+// the official ORTEX Python SDK):
+//   • {exchange}/{ticker}/short_interest      → SI%FF, shares short, free float, on-loan
+//   • stock/{exchange}/{ticker}/dtc           → days to cover
+//   • stock/{exchange}/{ticker}/ctb/all       → cost to borrow
+//   • stock/{exchange}/{ticker}/availability  → utilization / shares available
+// short_interest is REQUIRED (the #1 metric); the other three are
+// best-effort so a rate-limited TEST key still yields real fuel.
 
-  const path = CFG.ORTEX_SI_PATH
+// Build a full ORTEX URL from a path template, asking for just the
+// most-recent daily row (page_size=1) to keep payloads tiny.
+function ortexUrl(pathTemplate, symbol) {
+  const path = pathTemplate
     .replace('{ticker}',   encodeURIComponent(symbol))
     .replace('{exchange}', encodeURIComponent(CFG.ORTEX_EXCHANGE));
-  const url = `${CFG.ORTEX_BASE_URL}${path}`;
+  return `${CFG.ORTEX_BASE_URL}${path}?page_size=1`;
+}
 
-  const { ok, status, body } = await httpJson(url, {
+// GET one ORTEX endpoint and return its latest data row (or null).
+async function ortexRow(pathTemplate, symbol, label) {
+  const { ok, status, body } = await httpJson(ortexUrl(pathTemplate, symbol), {
     headers: {
-      'Ortex-Api-Key':  CFG.ORTEX_API_KEY,   // ORTEX header auth
-      'Authorization': `Bearer ${CFG.ORTEX_API_KEY}`, // some tiers use bearer
+      'Ortex-Api-Key': CFG.ORTEX_API_KEY,   // ORTEX header auth
       'Accept': 'application/json',
     },
   });
-
   if (!ok) {
-    console.error(`[SI] ORTEX ${symbol} → ${status}`);
+    console.error(`[SI] ORTEX ${label} ${symbol} → ${status}`);
     return null;
   }
+  // Paginated responses use `rows`; some endpoints return `data`.
+  const rows = Array.isArray(body?.rows) ? body.rows
+             : Array.isArray(body?.data) ? body.data
+             : body?.data ? [body.data]
+             : body?.result ? [body.result]
+             : body ? [body] : [];
+  return rows[0] ?? null;
+}
 
-  // ORTEX wraps payloads differently by endpoint — unwrap defensively
-  const d = body?.data ?? body?.rows?.[0] ?? body?.result ?? body ?? {};
+async function fetchOrtex(symbol) {
+  if (!CFG.ORTEX_ENABLED) return null;
 
-  const siPercentFloat = pickNum(d,
+  // short_interest is the anchor; the rest are best-effort enrichers.
+  const [si, dtc, ctb, avail] = await Promise.all([
+    ortexRow(CFG.ORTEX_SI_PATH,    symbol, 'SI'),
+    ortexRow(CFG.ORTEX_DTC_PATH,   symbol, 'DTC').catch(() => null),
+    ortexRow(CFG.ORTEX_CTB_PATH,   symbol, 'CTB').catch(() => null),
+    ortexRow(CFG.ORTEX_AVAIL_PATH, symbol, 'AVAIL').catch(() => null),
+  ]);
+
+  if (!si && !dtc && !ctb && !avail) return null;
+  const s = si ?? {};
+
+  const siPercentFloat = pickNum(s,
     'shortInterestPcFreeFloat', 'siPercentFreeFloat', 'shortInterestPercentFreeFloat',
-    'freeFloatShortPercent', 'si_percent_freefloat', 'shortPercentFloat');
-  const daysToCover = pickNum(d,
-    'daysToCover', 'daysToCoverNew', 'dtc', 'days_to_cover');
-  const costToBorrow = pickNum(d,
-    'costToBorrow', 'costToBorrowNew', 'ctbNew', 'ctb', 'cost_to_borrow');
-  const utilization = pickNum(d,
-    'utilization', 'utilizationRate', 'util', 'utilisation');
-  const sharesShort = pickNum(d,
-    'shortInterest', 'sharesShort', 'shortShares', 'estimatedShortInterest', 'si');
-  const freeFloat = pickNum(d,
+    'freeFloatShortPercent', 'estimatedShortInterestPercentFreeFloat',
+    'si_percent_freefloat', 'shortPercentFloat', 'shortInterestPercent');
+  const sharesShort = pickNum(s,
+    'shortInterest', 'sharesShort', 'shortShares', 'estimatedShortInterest',
+    'sharesOnLoan', 'si');
+  const freeFloat = pickNum(s,
     'freeFloat', 'free_float', 'floatShares', 'freeFloatShares');
-  const sharesOnLoanChange = pickNum(d,
-    'sharesOnLoanChange', 'onLoanChange', 'siChange', 'shortInterestChange');
+  // % of free float currently on loan ≈ utilization proxy when avail missing
+  const freeFloatOnLoan = pickNum(s,
+    'freeFloatOnLoanPercent', 'pcFreeFloatOnLoan', 'freeFloatOnLoan');
 
-  // Derive trend from ORTEX change field when present
+  const daysToCover = pickNum(dtc ?? s,
+    'daysToCover', 'daysToCoverNew', 'dtc', 'days_to_cover', 'value');
+  const costToBorrow = pickNum(ctb ?? s,
+    'costToBorrow', 'costToBorrowNew', 'ctbNew', 'ctb', 'cost_to_borrow',
+    'costToBorrowAll', 'value');
+  const utilization = pickNum(avail ?? s,
+    'utilization', 'utilizationRate', 'util', 'utilisation') ?? freeFloatOnLoan;
+
+  // Trend: prefer an explicit change field on the SI row.
+  const siChange = pickNum(s,
+    'sharesOnLoanChange', 'onLoanChange', 'siChange', 'shortInterestChange',
+    'shortInterestChangePercent');
   let siTrend = null;
-  if (sharesOnLoanChange != null) {
-    siTrend = sharesOnLoanChange > 0 ? 'rising' : sharesOnLoanChange < 0 ? 'falling' : 'flat';
+  if (siChange != null) {
+    siTrend = siChange > 0 ? 'rising' : siChange < 0 ? 'falling' : 'flat';
   }
 
   const hasAny = [siPercentFloat, daysToCover, costToBorrow, utilization, sharesShort]
@@ -120,7 +157,7 @@ async function fetchOrtex(symbol) {
     source: 'ortex',
     siPercentFloat, daysToCover, costToBorrow, utilization,
     sharesShort, freeFloat, siTrend,
-    asOf:  d.lastUpdated ?? d.asOf ?? d.date ?? null,
+    asOf:  s.lastUpdated ?? s.asOf ?? s.date ?? s.timestamp ?? null,
     stale: false,
   };
 }

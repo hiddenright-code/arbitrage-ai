@@ -58,14 +58,19 @@ export const SETTINGS = {
   // Both are optional — without them the detector falls back to a
   // volume-pattern estimate. Configure via .env (see .env example).
   SHORT_INTEREST: {
-    // ORTEX — real-time estimated SI, CTB, utilization, DTC (paid API)
+    // ORTEX — real-time estimated SI, CTB, utilization, DTC (paid API).
+    // Use the trial key ORTEX_API_KEY=TEST to verify wiring for free.
+    // The fuel metrics live across FOUR v1 endpoints (matches the
+    // official ORTEX SDK); each path template substitutes {exchange}
+    // and {ticker} per call. Override only if your tier differs.
     ORTEX_ENABLED:  !!process.env.ORTEX_API_KEY,
     ORTEX_API_KEY:  process.env.ORTEX_API_KEY  || '',
     ORTEX_BASE_URL: process.env.ORTEX_BASE_URL || 'https://api.ortex.com',
-    // Path template — {ticker} and {exchange} are substituted per call.
-    // Adjust to match your ORTEX subscription's endpoint if needed.
-    ORTEX_SI_PATH:  process.env.ORTEX_SI_PATH  || '/api/v1/short_interest/{exchange}/{ticker}',
     ORTEX_EXCHANGE: process.env.ORTEX_EXCHANGE || 'NASDAQ',
+    ORTEX_SI_PATH:    process.env.ORTEX_SI_PATH    || '/api/v1/{exchange}/{ticker}/short_interest',
+    ORTEX_DTC_PATH:   process.env.ORTEX_DTC_PATH   || '/api/v1/stock/{exchange}/{ticker}/dtc',
+    ORTEX_CTB_PATH:   process.env.ORTEX_CTB_PATH   || '/api/v1/stock/{exchange}/{ticker}/ctb/all',
+    ORTEX_AVAIL_PATH: process.env.ORTEX_AVAIL_PATH || '/api/v1/stock/{exchange}/{ticker}/availability',
 
     // FINRA — official consolidated short interest (free, OAuth2, lagged)
     FINRA_ENABLED:       !!(process.env.FINRA_CLIENT_ID && process.env.FINRA_CLIENT_SECRET),
