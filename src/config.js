@@ -66,7 +66,12 @@ export const SETTINGS = {
     ORTEX_ENABLED:  !!process.env.ORTEX_API_KEY,
     ORTEX_API_KEY:  process.env.ORTEX_API_KEY  || '',
     ORTEX_BASE_URL: process.env.ORTEX_BASE_URL || 'https://api.ortex.com',
-    ORTEX_EXCHANGE: process.env.ORTEX_EXCHANGE || 'NASDAQ',
+    // ORTEX resolves the {exchange} segment as either a market (NASDAQ,
+    // NYSE, …) or a 2-char ISO country code. A hardcoded single market
+    // breaks any ticker listed elsewhere (e.g. AMC/F/GME are NYSE, so
+    // NASDAQ 404s). 'US' lets ORTEX pick the right US listing for any
+    // ticker — the correct default for a US penny-stock scanner.
+    ORTEX_EXCHANGE: process.env.ORTEX_EXCHANGE || 'US',
     ORTEX_SI_PATH:    process.env.ORTEX_SI_PATH    || '/api/v1/{exchange}/{ticker}/short_interest',
     ORTEX_DTC_PATH:   process.env.ORTEX_DTC_PATH   || '/api/v1/stock/{exchange}/{ticker}/dtc',
     ORTEX_CTB_PATH:   process.env.ORTEX_CTB_PATH   || '/api/v1/stock/{exchange}/{ticker}/ctb/all',

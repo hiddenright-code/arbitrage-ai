@@ -77,25 +77,38 @@ function pickNum(obj, ...keys) {
 
 // Build a full ORTEX URL from a path template, asking for just the
 // most-recent daily row (page_size=1) to keep payloads tiny.
-function ortexUrl(pathTemplate, symbol) {
+function ortexUrl(pathTemplate, symbol, exchange) {
   const path = pathTemplate
     .replace('{ticker}',   encodeURIComponent(symbol))
-    .replace('{exchange}', encodeURIComponent(CFG.ORTEX_EXCHANGE));
+    .replace('{exchange}', encodeURIComponent(exchange));
   return `${CFG.ORTEX_BASE_URL}${path}?page_size=1`;
 }
 
-// GET one ORTEX endpoint and return its latest data row (or null).
-async function ortexRow(pathTemplate, symbol, label) {
-  const { ok, status, body } = await httpJson(ortexUrl(pathTemplate, symbol), {
+// One ORTEX GET for a given exchange/country segment.
+function ortexGet(pathTemplate, symbol, exchange) {
+  return httpJson(ortexUrl(pathTemplate, symbol, exchange), {
     headers: {
       'Ortex-Api-Key': CFG.ORTEX_API_KEY,   // ORTEX header auth
       'Accept': 'application/json',
     },
   });
-  if (!ok) {
-    console.error(`[SI] ORTEX ${label} ${symbol} → ${status}`);
+}
+
+// GET one ORTEX endpoint and return its latest data row (or null).
+async function ortexRow(pathTemplate, symbol, label) {
+  let res = await ortexGet(pathTemplate, symbol, CFG.ORTEX_EXCHANGE);
+  // A market-specific {exchange} (e.g. NASDAQ) 404s for any ticker listed
+  // on a different market — and a scanner sees a mix of NASDAQ/NYSE names.
+  // ORTEX also accepts a 2-char ISO country code, so retry once with 'US',
+  // which resolves the correct US listing for any ticker.
+  if (!res.ok && res.status === 404 && CFG.ORTEX_EXCHANGE.toUpperCase() !== 'US') {
+    res = await ortexGet(pathTemplate, symbol, 'US');
+  }
+  if (!res.ok) {
+    console.error(`[SI] ORTEX ${label} ${symbol} → ${res.status}`);
     return null;
   }
+  const body = res.body;
   // Paginated responses use `rows`; some endpoints return `data`.
   const rows = Array.isArray(body?.rows) ? body.rows
              : Array.isArray(body?.data) ? body.data
@@ -193,27 +206,38 @@ async function getFinraToken() {
 
 async function fetchFinra(symbol) {
   if (!CFG.FINRA_ENABLED) return null;
-  const token = await getFinraToken();
-  if (!token) return null;
 
+  // FINRA's consolidatedShortInterest is a PUBLIC Query API dataset — it
+  // needs no OAuth token. (The old code required a bearer token from
+  // FINRA_TOKEN_URL, but that endpoint 403s with "Invalid request — check
+  // base url/path"; the real FIP OAuth host isn't reachable here, and it
+  // isn't needed anyway.) getFinraToken() is kept below for deployments
+  // that point FINRA_DATASET at an entitlement-gated dataset.
   const url = `${CFG.FINRA_BASE_URL}/data/group/${CFG.FINRA_GROUP}/name/${CFG.FINRA_DATASET}`;
 
-  // FINRA Query API: fetch the two most recent settlement records for
-  // this symbol so we can compute the short-interest trend.
+  // FINRA partitions this dataset by settlementDate and the Query API
+  // REJECTS sorting on a partition key unless it's pinned with an EQUAL
+  // filter — so sortFields:['-settlementDate'] returns 400. Instead we
+  // pull a trailing window of settlements (SI is published twice a month)
+  // and pick the most recent two client-side.
+  const end   = new Date();
+  const start = new Date(end.getTime() - 180 * 24 * 60 * 60 * 1000);
+  const ymd   = (d) => d.toISOString().slice(0, 10);
+
   const { ok, status, body } = await httpJson(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${token}`,
       'Content-Type':  'application/json',
       'Accept':        'application/json',
     },
     body: JSON.stringify({
-      limit: 2,
+      limit: 50,
       compareFilters: [
         { compareType: 'EQUAL', fieldName: 'symbolCode', fieldValue: symbol },
       ],
-      // Most-recent settlement first
-      sortFields: ['-settlementDate'],
+      dateRangeFilters: [
+        { fieldName: 'settlementDate', startDate: ymd(start), endDate: ymd(end) },
+      ],
     }),
   });
 
@@ -225,13 +249,19 @@ async function fetchFinra(symbol) {
   const rows = Array.isArray(body) ? body : (body?.data ?? body?.rows ?? []);
   if (!rows.length) return null;
 
+  // API returns partition order, so sort most-recent settlement first.
+  rows.sort((a, b) => String(b.settlementDate ?? '').localeCompare(String(a.settlementDate ?? '')));
+
   const latest = rows[0];
   const prev   = rows[1];
 
   const sharesShort = pickNum(latest,
     'currentShortPositionQuantity', 'shortInterestQuantity', 'currentShortPosition', 'shortPositionQuantity');
-  const prevShort = prev ? pickNum(prev,
-    'currentShortPositionQuantity', 'shortInterestQuantity', 'currentShortPosition', 'shortPositionQuantity') : null;
+  // Prefer the previous settlement row; fall back to the prior figure
+  // FINRA stamps on the latest row itself (so a 1-row window still trends).
+  const prevShort = (prev ? pickNum(prev,
+    'currentShortPositionQuantity', 'shortInterestQuantity', 'currentShortPosition', 'shortPositionQuantity') : null)
+    ?? pickNum(latest, 'previousShortPositionQuantity');
   const daysToCover = pickNum(latest,
     'daysToCoverQuantity', 'daysToCover', 'shortInterestRatio');
   const avgDailyVol = pickNum(latest,
