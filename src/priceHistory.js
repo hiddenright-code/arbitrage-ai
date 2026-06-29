@@ -2,7 +2,7 @@
 // PRICEHISTORY.JS — Stock price data via Alpaca Data API v2
 //
 // Endpoints used:
-//   /v2/stocks/most-actives        — discover high-volume stocks
+//   /v1beta1/screener/stocks/most-actives — discover high-volume stocks
 //   /v2/stocks/snapshots           — current price, VWAP, daily bar
 //   /v2/stocks/{sym}/bars (1Day)   — daily OHLCV for RVOL avg
 //   /v2/stocks/{sym}/bars (1Min)   — intraday data for chart signals
@@ -40,7 +40,9 @@ async function alpacaGet(path) {
 // ─── Fetch most-active stocks by volume ──────────────────────
 export async function fetchMostActive(top = 100) {
   try {
-    const data = await alpacaGet(`/v2/stocks/most-actives?by=volume&top=${top}&feed=${FEED}`);
+    // Alpaca's most-actives screener lives under the v1beta1 screener API
+    // (not /v2/stocks). It takes `by` (volume|trades) and `top`; no feed param.
+    const data = await alpacaGet(`/v1beta1/screener/stocks/most-actives?by=volume&top=${top}`);
     return data.most_actives ?? [];
   } catch (err) {
     console.error('[PriceHistory] fetchMostActive:', err.message);

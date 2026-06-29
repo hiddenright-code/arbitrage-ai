@@ -263,11 +263,23 @@ async function fetchFinra(symbol) {
 function merge(symbol, ortex, finra, snapshotFloat) {
   const notes = [];
   if (!ortex && !finra) {
+    // Distinguish "no provider configured" from "configured but the HTTP
+    // fetch failed/returned nothing". Previously this always said
+    // "No SI provider configured", which was misleading when /api/config
+    // shows ortex:true / finra:true — the real cause was a failed fetch.
+    // Check the backend log for the actual [SI] ORTEX/FINRA status codes.
+    const configured = [];
+    if (CFG.ORTEX_ENABLED) configured.push('ORTEX');
+    if (CFG.FINRA_ENABLED) configured.push('FINRA');
+    const note = configured.length
+      ? `SI provider(s) configured (${configured.join(' + ')}) but returned no data — `
+        + `fetch failed or unauthorized; see backend [SI] logs for status codes`
+      : 'No SI provider configured';
     return {
       symbol, source: 'none', hasRealData: false,
       siPercentFloat: null, daysToCover: null, costToBorrow: null,
       utilization: null, sharesShort: null, freeFloat: null,
-      siTrend: null, asOf: null, stale: false, notes: ['No SI provider configured'],
+      siTrend: null, asOf: null, stale: false, notes: [note],
     };
   }
 
