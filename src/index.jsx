@@ -205,6 +205,47 @@ const RunnerCard = ({ runner }) => {
   );
 };
 
+// ─── Building (anticipation) card — a pre-run setup ──────────
+const BuildingCard = ({ b }) => {
+  const a = b.anticipation ?? {};
+  const c = a.components ?? {};
+  const cat = b.catalyst;
+  const readyColor = b.readiness === 'PRIMED' ? 'green' : b.readiness === 'BUILDING' ? 'cyan' : 'gray';
+  return (
+    <div className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-3 transition-colors">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-white text-sm font-mono font-bold">{b.symbol}</span>
+          <Badge color={readyColor}>{b.readiness}</Badge>
+          <Badge color="gray">setup {Math.round((b.setupScore ?? 0) * 100)}</Badge>
+          {cat && <Badge color="purple">📰 {cat.catalyst?.label} · {cat.status?.toLowerCase()} {cat.dayCount}d</Badge>}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span>${b.price?.toFixed(3)}</span>
+          <span className={b.changePct >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+            {b.changePct >= 0 ? '+' : ''}{b.changePct?.toFixed(1)}%
+          </span>
+          <span className="text-gray-600" title="ignition (low = not yet firing)">ign {Math.round((a.ignition ?? 0) * 100)}</span>
+        </div>
+      </div>
+      {/* Setup component bar: fuel · catalyst · coil · stir */}
+      <div className="mt-2 flex gap-1 h-1.5">
+        <div className="bg-pink-500"   style={{ width: `${(c.fuel ?? 0) * 25}%` }}     title={`Fuel ${c.fuel}`} />
+        <div className="bg-purple-500" style={{ width: `${(c.catalyst ?? 0) * 35}%` }} title={`Catalyst ${c.catalyst}`} />
+        <div className="bg-sky-500"    style={{ width: `${(c.coil ?? 0) * 25}%` }}     title={`Coil ${c.coil}`} />
+        <div className="bg-amber-500"  style={{ width: `${(c.stir ?? 0) * 15}%` }}     title={`Stir ${c.stir}`} />
+      </div>
+      {a.reasons?.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {a.reasons.slice(0, 5).map((r, i) => (
+            <span key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-1.5 py-0.5">{r}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── Main app ─────────────────────────────────────────────────
 export default function PennyStockBot() {
   const [config, setConfig]         = useState(null);
@@ -314,6 +355,7 @@ export default function PennyStockBot() {
 
   const signals    = scan?.signals ?? [];
   const runners    = scan?.runners ?? [];
+  const building   = scan?.building ?? [];
   const simStats   = simData?.stats ?? {};
   const portfolioValue = account ? parseFloat(account.portfolio_value) : 0;
   const buyingPower    = account ? parseFloat(account.buying_power) : 0;
@@ -323,6 +365,7 @@ export default function PennyStockBot() {
 
   const TABS = [
     { id: 'signals',  label: '🎯 Signals',  count: signals.length || null },
+    { id: 'building', label: '🌱 Building',  count: building.length || null },
     { id: 'runners',  label: '🏃 Runners',  count: runners.length || null },
     { id: 'sim',      label: '📋 Sim',      count: simStats.trades || null },
     { id: 'trades',   label: 'Trades',      count: trades.length || null },
@@ -426,6 +469,22 @@ export default function PennyStockBot() {
             {signals.map((signal, i) => (
               <SignalCard key={`${signal.symbol}-${i}`} signal={signal} index={i} onExecute={executeTrade} realMoneyMode={realMoneyMode} />
             ))}
+          </div>
+        )}
+
+        {/* Building (anticipation tier — pre-run setups) */}
+        {activeTab === 'building' && (
+          <div className="space-y-2">
+            <div className="text-xs text-gray-500 bg-gray-900/40 border border-gray-800 rounded-lg px-3 py-2 mb-1">
+              🌱 <span className="text-emerald-400">Anticipated</span> — loaded squeeze fuel + fresh catalyst + coiling base, <span className="text-gray-300">not yet ignited</span>. Watch-only; these are setups <em>before</em> the run, not buy signals.
+            </div>
+            {building.length === 0 && (
+              <div className="text-center text-gray-600 py-16">
+                Nothing building right now
+                <p className="text-xs text-gray-700 mt-1">Catalyst names that are coiling but haven't run yet will appear here</p>
+              </div>
+            )}
+            {building.map((b) => <BuildingCard key={b.symbol} b={b} />)}
           </div>
         )}
 

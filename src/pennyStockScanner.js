@@ -55,9 +55,11 @@ import {
   calculateRvol,
 } from './priceHistory.js';
 import { getActiveSymbols, getCatalystContext } from './catalystWatchlist.js';
+import { detectSqueezeSetup } from './shortSqueezeDetector.js';
+import { scoreAnticipation, isBuilding } from './anticipation.js';
 
 const { SCORE_WEIGHTS, PRICE_MIN, PRICE_MAX, MIN_DAILY_VOLUME,
-        MIN_RVOL, MIN_CHANGE_PCT, MAX_RUNNERS } = SETTINGS;
+        MIN_RVOL, MIN_CHANGE_PCT, MAX_RUNNERS, ANTICIPATION } = SETTINGS;
 
 // ─── Component scoring functions ─────────────────────────────
 
@@ -184,7 +186,7 @@ export async function scanRunners() {
   const mostActive = await fetchMostActive(SETTINGS.TOP_ACTIVE_STOCKS);
   if (!mostActive.length) {
     console.log('[Scanner] No most-active data returned');
-    return [];
+    return { runners: [], building: [] };
   }
 
   // 2. Pull snapshots for the most-active set PLUS any catalyst-watchlist
@@ -194,20 +196,25 @@ export async function scanRunners() {
   const symbols   = [...new Set([...mostActive.map(s => s.symbol), ...watchlistSymbols])];
   const snapshots = await fetchSnapshots(symbols);
 
-  // 3. Pre-filter by penny stock criteria (price + volume)
+  // 3. Pre-filter by penny stock criteria (price + volume). Catalyst-
+  //    watchlist names bypass the volume floor — we track them on the
+  //    catalyst, so a quiet name coiling on news still reaches scoring.
+  const watchSet = new Set(watchlistSymbols);
   const pennySymbols = Object.entries(snapshots)
-    .filter(([, snap]) => {
+    .filter(([sym, snap]) => {
       const p = snap.price;
-      return p >= PRICE_MIN && p <= PRICE_MAX && snap.volume >= MIN_DAILY_VOLUME;
+      if (p < PRICE_MIN || p > PRICE_MAX) return false;
+      return snap.volume >= MIN_DAILY_VOLUME || watchSet.has(sym);
     })
     .map(([sym]) => sym);
 
   console.log(`[Scanner] ${pennySymbols.length} penny stock candidates (price $${PRICE_MIN}–$${PRICE_MAX}, vol ≥${MIN_DAILY_VOLUME.toLocaleString()} on ${SETTINGS.DATA_FEED} feed)`);
 
-  if (!pennySymbols.length) return [];
+  if (!pennySymbols.length) return { runners: [], building: [] };
 
   // 4. Fetch daily bars for RVOL calculation (batched but serial to avoid rate limits)
-  const runners = [];
+  const runners  = [];
+  const building = [];   // pre-run "BUILDING" setups (anticipation tier)
 
   await Promise.all(
     pennySymbols.map(async (symbol) => {
@@ -217,46 +224,47 @@ export async function scanRunners() {
         // Fetch 30 days of daily bars to compute RVOL baseline
         const dailyBars = await fetchDailyBars(symbol, 30);
         const rvol      = calculateRvol(snap.volume, dailyBars);
+        snap.rvol       = rvol;
+        const catalyst  = getCatalystContext(symbol);   // null unless on the watchlist
 
-        // Apply RVOL + momentum filters
-        if (rvol < MIN_RVOL)               return;
-        if (snap.changePct < MIN_CHANGE_PCT) return;
+        // ── Confirmed RUNNER: move already underway (RVOL + momentum) ──
+        if (rvol >= MIN_RVOL && snap.changePct >= MIN_CHANGE_PCT) {
+          const minuteBars = await fetchMinuteBars(symbol, 120);
+          const score      = scoreCandidate({ symbol, snapshot: snap, dailyBars, minuteBars });
+          const tier       = classifySignal(score.total);
+          if (tier === 'SKIP') return;
 
-        // Attach computed RVOL to snapshot for scoring
-        snap.rvol = rvol;
+          runners.push({
+            symbol, tier, score, snapshot: snap, catalyst, rvol,
+            changePct: snap.changePct, price: snap.price, volume: snap.volume,
+            vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
+            scannedAt: Date.now(),
+          });
+          return;
+        }
 
-        // Fetch intraday minute bars for technical analysis
-        const minuteBars = await fetchMinuteBars(symbol, 120);
-
-        const score     = scoreCandidate({ symbol, snapshot: snap, dailyBars, minuteBars });
-        const tier      = classifySignal(score.total);
-
-        if (tier === 'SKIP') return;
-
-        runners.push({
-          symbol,
-          tier,
-          score,
-          snapshot: snap,
-          catalyst:      getCatalystContext(symbol),   // null unless on the watchlist
-          rvol,
-          changePct:     snap.changePct,
-          price:         snap.price,
-          volume:        snap.volume,
-          vwap:          snap.vwap,
-          dailyHigh:     snap.dailyHigh,
-          dailyLow:      snap.dailyLow,
-          scannedAt:     Date.now(),
-        });
+        // ── Not yet running → score the pre-run SETUP (anticipation) ──
+        if (!ANTICIPATION.ENABLED) return;
+        const squeeze      = detectSqueezeSetup(snap, dailyBars, null);   // estimated fuel
+        const anticipation = scoreAnticipation({ snapshot: snap, dailyBars, squeeze, catalyst });
+        if (isBuilding(anticipation, snap, catalyst)) {
+          building.push({
+            symbol, tier: 'BUILDING', readiness: anticipation.readiness,
+            setupScore: anticipation.setupScore, anticipation, squeeze, catalyst,
+            snapshot: snap, rvol, changePct: snap.changePct, price: snap.price,
+            volume: snap.volume, vwap: snap.vwap, scannedAt: Date.now(),
+          });
+        }
       } catch (err) {
         console.error(`[Scanner] ${symbol} error:`, err.message);
       }
     })
   );
 
-  // 5. Sort by score descending, return top N
-  const sorted = runners.sort((a, b) => b.score.total - a.score.total).slice(0, MAX_RUNNERS);
+  // 5. Sort each list by strength, cap, return both.
+  const sortedRunners  = runners.sort((a, b) => b.score.total - a.score.total).slice(0, MAX_RUNNERS);
+  const sortedBuilding = building.sort((a, b) => b.setupScore - a.setupScore).slice(0, ANTICIPATION.MAX_BUILDING);
 
-  console.log(`[Scanner] Found ${sorted.length} runners (${runners.filter(r => r.tier === 'STRONG_BUY').length} STRONG_BUY)`);
-  return sorted;
+  console.log(`[Scanner] Found ${sortedRunners.length} runners (${runners.filter(r => r.tier === 'STRONG_BUY').length} STRONG_BUY) · ${sortedBuilding.length} building`);
+  return { runners: sortedRunners, building: sortedBuilding };
 }

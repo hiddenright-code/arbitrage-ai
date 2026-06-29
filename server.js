@@ -50,11 +50,12 @@ const SCAN_CACHE_MS = 15_000;
 
 // ─── Core scan pipeline ───────────────────────────────────────
 async function runScanPipeline() {
-  // 1. Discover + score runners
-  const runners = await scanRunners();
+  // 1. Discover + score runners (confirmed) and BUILDING setups (pre-run)
+  const { runners, building } = await scanRunners();
 
   if (!runners.length) {
-    return { runners: [], signals: [], marketHealth: null, scannedAt: Date.now() };
+    // Still surface anticipation candidates even when nothing has ignited.
+    return { runners: [], signals: [], building, marketHealth: null, scannedAt: Date.now() };
   }
 
   const symbols = runners.map(r => r.symbol);
@@ -106,7 +107,7 @@ async function runScanPipeline() {
     squeeze: squeezeMap[r.symbol] ?? null,
   }));
 
-  return { runners: enrichedRunners, signals, marketHealth, newsMap, squeezeMap, scannedAt: Date.now() };
+  return { runners: enrichedRunners, signals, building, marketHealth, newsMap, squeezeMap, scannedAt: Date.now() };
 }
 
 async function getScan(force = false) {
@@ -118,7 +119,7 @@ async function getScan(force = false) {
     : { active: true, session: 'gate-disabled', reason: 'Market gate disabled', etTime: null };
 
   if (!market.active) {
-    lastScan = { runners: [], signals: [], marketHealth: null, marketStatus: market, scannedAt: Date.now() };
+    lastScan = { runners: [], signals: [], building: [], marketHealth: null, marketStatus: market, scannedAt: Date.now() };
     return lastScan;
   }
 
@@ -150,9 +151,11 @@ app.get('/api/scan', async (req, res) => {
     res.json({
       runners:      scan.runners,
       signals:      scan.signals,
+      building:     scan.building ?? [],
       marketHealth: scan.marketHealth,
       marketStatus: scan.marketStatus ?? null,
       strongBuys:   scan.signals.filter(s => s.tier === 'HIGH').length,
+      buildingCount: (scan.building ?? []).length,
       closedSimPositions: closedSim,
       newSimPositions:    newSim,
       openSimPositions:   getOpenSimPositions(),
@@ -172,6 +175,16 @@ app.get('/api/runners', async (req, res) => {
   try {
     const scan = await getScan();
     res.json({ runners: scan.runners, count: scan.runners.length, marketStatus: scan.marketStatus ?? null, scannedAt: scan.scannedAt });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/anticipated — pre-run "BUILDING" setups (watch-only tier).
+// Loaded squeeze fuel + fresh catalyst + coiling base, NOT yet ignited.
+app.get('/api/anticipated', async (req, res) => {
+  try {
+    const scan = await getScan();
+    const building = scan.building ?? [];
+    res.json({ building, count: building.length, marketStatus: scan.marketStatus ?? null, scannedAt: scan.scannedAt });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

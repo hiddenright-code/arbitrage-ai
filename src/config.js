@@ -37,6 +37,27 @@ export const SETTINGS = {
   MIN_SIGNAL_SCORE:       0.45,
   AUTO_EXECUTE_THRESHOLD: 0.75,
 
+  // ── Anticipation Tier ("BUILDING" — pre-run setups) ──────────
+  // The runner scanner only surfaces stocks already moving (up ≥5% + RVOL
+  // ≥3x). This tier surfaces the SETUP *before* ignition: loaded squeeze
+  // fuel + a fresh catalyst + a coiling/accumulation base, on names that
+  // have NOT yet run. Watch-only by default — it never auto-trades a pre-run
+  // setup (pure anticipation fades; confirmation is what you execute on).
+  ANTICIPATION: {
+    ENABLED:          process.env.ANTICIPATION !== 'false',
+    MIN_SETUP_SCORE:  0.40,   // setup strength required to surface as BUILDING
+    IGNITION_CEILING: 0.45,   // above this it's already firing → it's a runner, not "building"
+    MAX_CHANGE_PCT:   8.0,     // already up more than this ⇒ not "pre-run" anymore
+    MAX_BUILDING:     15,      // cap the list
+    AUTO_ARM:         process.env.ANTICIPATION_AUTO_ARM === 'true',  // off: watch-only
+    // A confirmed/confirming fresh catalyst is itself a pre-run thesis, so a
+    // penny name on the watchlist surfaces even if the blended setup is soft.
+    CATALYST_OVERRIDE: ['CONFIRMED', 'CONFIRMING'],
+    // Setup score weights (re-normalized over available components). Catalyst
+    // and loaded fuel are the real anticipation drivers; coil/stir refine.
+    WEIGHTS: { fuel: 0.25, catalyst: 0.35, coil: 0.25, stir: 0.15 },
+  },
+
   // ── Trade Sizing ─────────────────────────────────────────────
   CAPITAL_PER_TRADE: 9,           // Default USD per position
   MAX_POSITION_SIZE: 25,          // Hard cap USD per position
