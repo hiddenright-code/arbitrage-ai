@@ -57,6 +57,7 @@ const TierBadge = ({ tier }) => {
     STRONG_BUY: { color: 'green',  label: '★ STRONG BUY' },
     BUY:        { color: 'cyan',   label: 'BUY' },
     WATCH:      { color: 'yellow', label: '👁 WATCH' },
+    IN_PLAY:    { color: 'orange', label: '🔥 IN-PLAY' },
     HIGH:       { color: 'green',  label: 'HIGH' },
     MEDIUM:     { color: 'yellow', label: 'MED' },
     LOW:        { color: 'gray',   label: 'LOW' },
@@ -185,6 +186,12 @@ const RunnerCard = ({ runner }) => {
             <Badge color="pink">SI {runner.squeeze.shortInterest.siPercentFloat.toFixed(0)}%</Badge>
           )}
           {runner.news?.hasCatalyst && <Badge color="purple">📰 {runner.news.catalysts[0]?.label}</Badge>}
+          {runner.inPlay && (
+            <Badge color={runner.inPlay.status === 'ACTIVE' ? 'orange' : 'gray'}>
+              {runner.inPlay.status === 'COOLING' ? '💤 cooling' : '🔥 active'} · peak {runner.inPlay.peakRvol?.toFixed(0)}x{runner.inPlay.dayCount > 0 ? ` · d${runner.inPlay.dayCount}` : ''}
+            </Badge>
+          )}
+          {runner.inPlayRescued && <Badge color="orange">rescued: high RVOL/borrow</Badge>}
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <span>${runner.price?.toFixed(3)}</span>

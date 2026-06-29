@@ -22,6 +22,7 @@ import {
   scanCatalysts, updateConfirmation,
   getWatchlist, getWatchlistStats,
 } from './src/catalystWatchlist.js';
+import { markInPlay, getInPlayList } from './src/inPlay.js';
 import { executeLiveTrade, emergencyStop } from './src/liveExecutor.js';
 import { scanRunners } from './src/pennyStockScanner.js';
 import { analyzeNewsMulti } from './src/newsAnalyzer.js';
@@ -82,6 +83,13 @@ async function runScanPipeline() {
       if (si?.freeFloat) r.snapshot.floatShares = si.freeFloat;
       squeezeMap[r.symbol]    = detectSqueezeSetup(r.snapshot, dailyBars, si);
       minuteBarsMap[r.symbol] = await fetchMinuteBars(r.symbol, 120);
+      // Stash real SI (float / cost-to-borrow) on the in-play registry so the
+      // next scan can score this name on its true float and keep it alive
+      // while shorts are pressured.
+      if (si?.hasRealData) {
+        markInPlay(r.symbol, { price: r.price, rvol: r.rvol, changePct: r.changePct },
+          { freeFloat: si.freeFloat, costToBorrow: si.costToBorrow, siPercentFloat: si.siPercentFloat });
+      }
     })
   );
 
@@ -176,6 +184,12 @@ app.get('/api/runners', async (req, res) => {
     const scan = await getScan();
     res.json({ runners: scan.runners, count: scan.runners.length, marketStatus: scan.marketStatus ?? null, scannedAt: scan.scannedAt });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/inplay — names still "in play" (active/cooling) from prior scans,
+// kept alive across pauses for a potential second leg.
+app.get('/api/inplay', (req, res) => {
+  res.json({ inPlay: getInPlayList() });
 });
 
 // GET /api/anticipated — pre-run "BUILDING" setups (watch-only tier).

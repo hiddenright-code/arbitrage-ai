@@ -27,6 +27,25 @@ export const SETTINGS = {
   MIN_CHANGE_PCT:    5.0,         // Must be up ≥5% today (momentum confirmation)
   STRONG_CHANGE_PCT: 20.0,        // ≥20% = strong runner
 
+  // ── In-Play Registry (don't drop a name the moment it pauses) ─
+  // A penny runner is choppy and multi-day: it pops, consolidates, then
+  // often puts in a second leg. The plain scorer was dropping clearly-active
+  // names (high RVOL, hard-to-borrow, low float) on a weak momentum score.
+  // This keeps a name "in play" across scans/days once it shows real volume,
+  // and rescues it from a SKIP classification.
+  INPLAY: {
+    ENABLED:        process.env.INPLAY !== 'false',
+    RVOL_INPLAY:    5.0,    // RVOL ≥ this ⇒ in-play regardless of momentum score
+    ACTIVE_RVOL:    3.0,    // ≥ this ⇒ status ACTIVE
+    COOL_RVOL:      1.5,    // between COOL and ACTIVE (or holding price) ⇒ COOLING
+    FADE_PRICE_PCT: 0.70,   // price < 70% of peak AND volume gone ⇒ FADED
+    HARD_TO_BORROW_CTB: 50, // cost-to-borrow ≥ this ⇒ keep (shorts pressured)
+    LOW_FLOAT:      10_000_000, // float < this + elevated vol ⇒ keep
+    MAX_DAYS:       3,      // track up to 3 trading days for a second leg
+    MAX_INPLAY:     40,
+    PERSIST_PATH:   process.env.INPLAY_PERSIST_PATH || 'data/inplay.json',
+  },
+
   // ── Float Tier Thresholds (shares) ───────────────────────────
   // Smaller float = fewer shares to push price = bigger % moves
   FLOAT_SMALL:  10_000_000,       // <10M   = explosive potential

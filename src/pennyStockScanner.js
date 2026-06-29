@@ -57,9 +57,10 @@ import {
 import { getActiveSymbols, getCatalystContext } from './catalystWatchlist.js';
 import { detectSqueezeSetup } from './shortSqueezeDetector.js';
 import { scoreAnticipation, isBuilding } from './anticipation.js';
+import { getInPlay, getInPlaySymbols, markInPlay, updateInPlay, prune as pruneInPlay } from './inPlay.js';
 
 const { SCORE_WEIGHTS, PRICE_MIN, PRICE_MAX, MIN_DAILY_VOLUME,
-        MIN_RVOL, MIN_CHANGE_PCT, MAX_RUNNERS, ANTICIPATION } = SETTINGS;
+        MIN_RVOL, MIN_CHANGE_PCT, MAX_RUNNERS, ANTICIPATION, INPLAY } = SETTINGS;
 
 // ─── Component scoring functions ─────────────────────────────
 
@@ -193,18 +194,19 @@ export async function scanRunners() {
   //    names (hybrid model — a confirmed catalyst gets tracked intraday
   //    even before it cracks the most-actives list).
   const watchlistSymbols = getActiveSymbols();
-  const symbols   = [...new Set([...mostActive.map(s => s.symbol), ...watchlistSymbols])];
+  const inPlaySymbols    = INPLAY.ENABLED ? getInPlaySymbols() : [];   // names still in play from prior scans
+  const symbols   = [...new Set([...mostActive.map(s => s.symbol), ...watchlistSymbols, ...inPlaySymbols])];
   const snapshots = await fetchSnapshots(symbols);
 
   // 3. Pre-filter by penny stock criteria (price + volume). Catalyst-
   //    watchlist names bypass the volume floor — we track them on the
   //    catalyst, so a quiet name coiling on news still reaches scoring.
-  const watchSet = new Set(watchlistSymbols);
+  const bypassFloor = new Set([...watchlistSymbols, ...inPlaySymbols]);   // tracked names skip the volume floor
   const pennySymbols = Object.entries(snapshots)
     .filter(([sym, snap]) => {
       const p = snap.price;
       if (p < PRICE_MIN || p > PRICE_MAX) return false;
-      return snap.volume >= MIN_DAILY_VOLUME || watchSet.has(sym);
+      return snap.volume >= MIN_DAILY_VOLUME || bypassFloor.has(sym);
     })
     .map(([sym]) => sym);
 
@@ -226,21 +228,53 @@ export async function scanRunners() {
         const rvol      = calculateRvol(snap.volume, dailyBars);
         snap.rvol       = rvol;
         const catalyst  = getCatalystContext(symbol);   // null unless on the watchlist
+        const inPlayCtx = INPLAY.ENABLED ? getInPlay(symbol) : null;
+
+        // Feed REAL float (from prior ORTEX/FINRA enrichment) into scoring so
+        // a tiny-float name isn't scored as neutral.
+        if (inPlayCtx?.si?.freeFloat) snap.floatShares = inPlayCtx.si.freeFloat;
 
         // ── Confirmed RUNNER: move already underway (RVOL + momentum) ──
         if (rvol >= MIN_RVOL && snap.changePct >= MIN_CHANGE_PCT) {
           const minuteBars = await fetchMinuteBars(symbol, 120);
           const score      = scoreCandidate({ symbol, snapshot: snap, dailyBars, minuteBars });
-          const tier       = classifySignal(score.total);
-          if (tier === 'SKIP') return;
+          let tier         = classifySignal(score.total);
 
+          // Passing the runner gate (RVOL ≥3 + up ≥5%) IS the bar to be
+          // tracked. The composite score should only RANK runners, never
+          // discard one — this was the SOAR bug: RVOL ~6x and +7%, but +7%
+          // only scores 0.20 momentum, dragging the blend to SKIP and getting
+          // the name thrown away. A gate-passer is now at least WATCH; the
+          // ORTEX/FINRA enrichment (float, 241% borrow, SI) then ranks it.
+          const softScore = tier === 'SKIP';
+          if (softScore) tier = 'WATCH';
+
+          const entry = INPLAY.ENABLED ? markInPlay(symbol, { price: snap.price, rvol, changePct: snap.changePct }) : null;
           runners.push({
-            symbol, tier, score, snapshot: snap, catalyst, rvol,
+            symbol, tier, score, snapshot: snap, catalyst, inPlay: entry, inPlayRescued: softScore, rvol,
             changePct: snap.changePct, price: snap.price, volume: snap.volume,
             vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
             scannedAt: Date.now(),
           });
           return;
+        }
+
+        // ── Paused but still IN-PLAY: keep it surfaced (don't drop) ───
+        // A name that popped earlier and is now consolidating stays tracked
+        // for a second leg instead of being re-judged dead each scan.
+        if (INPLAY.ENABLED && inPlayCtx) {
+          const updated = updateInPlay(symbol, { price: snap.price, rvol, changePct: snap.changePct });
+          if (updated && updated.status !== 'FADED') {
+            const minuteBars = await fetchMinuteBars(symbol, 120);
+            const score      = scoreCandidate({ symbol, snapshot: snap, dailyBars, minuteBars });
+            runners.push({
+              symbol, tier: 'IN_PLAY', score, snapshot: snap, catalyst, inPlay: updated, rvol,
+              changePct: snap.changePct, price: snap.price, volume: snap.volume,
+              vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
+              scannedAt: Date.now(),
+            });
+            return;
+          }
         }
 
         // ── Not yet running → score the pre-run SETUP (anticipation) ──
@@ -260,6 +294,8 @@ export async function scanRunners() {
       }
     })
   );
+
+  if (INPLAY.ENABLED) pruneInPlay();   // expire faded names, persist registry
 
   // 5. Sort each list by strength, cap, return both.
   const sortedRunners  = runners.sort((a, b) => b.score.total - a.score.total).slice(0, MAX_RUNNERS);
