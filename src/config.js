@@ -138,9 +138,26 @@ export const SETTINGS = {
   QQQ_SYMBOL: 'QQQ',
 
   // ── Market Hours (US Eastern) ────────────────────────────────
+  // These are fallbacks only — the live gate prefers Alpaca's /v2/calendar
+  // (real trading days + per-day session bounds, so holidays and early
+  // closes are handled automatically). Used when that lookup is unavailable.
   MARKET_OPEN:  { hour: 9,  minute: 30 },
   MARKET_CLOSE: { hour: 16, minute: 0  },
-  PRE_MARKET:   { hour: 4,  minute: 0  },
+  PRE_MARKET:   { hour: 4,  minute: 0  },   // extended-hours open
+  AFTER_MARKET: { hour: 20, minute: 0  },   // extended-hours close
+
+  // ── Market-Hours Gate ────────────────────────────────────────
+  // When enabled, the scan pipeline (and every Alpaca/ORTEX/FINRA/news
+  // call it makes) is skipped while the market is closed — so a real
+  // deployment doesn't burn API quota overnight, on weekends, or on
+  // holidays. Account/status endpoints stay live regardless.
+  //   MARKET_GATE=false        → disable the gate (always scan; useful
+  //                              for off-hours testing)
+  //   SCAN_EXTENDED_HOURS=false → gate to regular hours only (9:30–16:00);
+  //                              default includes pre-market→after-hours,
+  //                              where penny runners often gap.
+  MARKET_GATE_ENABLED: process.env.MARKET_GATE !== 'false',
+  SCAN_EXTENDED_HOURS: process.env.SCAN_EXTENDED_HOURS !== 'false',
 
   // ── Display ──────────────────────────────────────────────────
   MAX_SIGNALS:       10,   // Top N signals to return

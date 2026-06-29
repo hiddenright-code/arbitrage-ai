@@ -166,6 +166,19 @@ export async function isMarketOpen() {
   return clock?.is_open ?? false;
 }
 
+// Trading calendar for a date range (inclusive, YYYY-MM-DD). Each entry:
+//   { date, open, close, session_open, session_close, settlement_date }
+// Non-trading days (weekends/holidays) are simply absent from the result,
+// which is what makes it the authoritative source for the market gate.
+export async function getMarketCalendar(start, end) {
+  try {
+    return await alpacaRequest('GET', `/v2/calendar?start=${start}&end=${end}`);
+  } catch (err) {
+    console.error('[Broker] getMarketCalendar:', err.message);
+    return [];
+  }
+}
+
 // ─── Connection test ──────────────────────────────────────────
 export async function testConnection() {
   try {

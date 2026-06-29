@@ -17,6 +17,7 @@ import {
   getAccount, getPositions, getBuyingPower,
   testConnection, getMarketClock, getBrokerInfo,
 } from './src/exchangeClient.js';
+import { getMarketWindow } from './src/marketHours.js';
 import { executeLiveTrade, emergencyStop } from './src/liveExecutor.js';
 import { scanRunners } from './src/pennyStockScanner.js';
 import { analyzeNewsMulti } from './src/newsAnalyzer.js';
@@ -105,8 +106,20 @@ async function runScanPipeline() {
 }
 
 async function getScan(force = false) {
+  // Market-hours gate: outside the trading window, skip the entire pipeline
+  // (no Alpaca/ORTEX/FINRA/news calls) and serve an empty, labeled scan.
+  // Disable with MARKET_GATE=false for off-hours testing.
+  const market = SETTINGS.MARKET_GATE_ENABLED
+    ? await getMarketWindow()
+    : { active: true, session: 'gate-disabled', reason: 'Market gate disabled', etTime: null };
+
+  if (!market.active) {
+    lastScan = { runners: [], signals: [], marketHealth: null, marketStatus: market, scannedAt: Date.now() };
+    return lastScan;
+  }
+
   if (!force && Date.now() - lastScan.scannedAt < SCAN_CACHE_MS) return lastScan;
-  lastScan = await runScanPipeline();
+  lastScan = { ...(await runScanPipeline()), marketStatus: market };
   return lastScan;
 }
 
@@ -134,6 +147,7 @@ app.get('/api/scan', async (req, res) => {
       runners:      scan.runners,
       signals:      scan.signals,
       marketHealth: scan.marketHealth,
+      marketStatus: scan.marketStatus ?? null,
       strongBuys:   scan.signals.filter(s => s.tier === 'HIGH').length,
       closedSimPositions: closedSim,
       newSimPositions:    newSim,
@@ -153,7 +167,7 @@ app.get('/api/scan', async (req, res) => {
 app.get('/api/runners', async (req, res) => {
   try {
     const scan = await getScan();
-    res.json({ runners: scan.runners, count: scan.runners.length, scannedAt: scan.scannedAt });
+    res.json({ runners: scan.runners, count: scan.runners.length, marketStatus: scan.marketStatus ?? null, scannedAt: scan.scannedAt });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -179,6 +193,7 @@ app.get('/api/signals', async (req, res) => {
     res.json({
       signals:            scan.signals,
       marketHealth:       scan.marketHealth,
+      marketStatus:       scan.marketStatus ?? null,
       closedPositions,
       openPositions:      getOpenPositions(),
       stats:              getTradeStats(),
@@ -253,6 +268,14 @@ app.get('/api/clock', async (req, res) => {
   res.json(await getMarketClock());
 });
 
+// GET /api/market-status — the scanner's trading-window gate (extended
+// hours, holiday-aware). Tells the dashboard whether/why the bot is idle.
+app.get('/api/market-status', async (req, res) => {
+  try {
+    res.json({ gateEnabled: SETTINGS.MARKET_GATE_ENABLED, ...(await getMarketWindow()) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/config', (req, res) => {
   res.json({
     broker:            getBrokerInfo(),
@@ -317,7 +340,13 @@ app.listen(PORT, () => {
   console.log(`   Signals:    volume_surge, short_squeeze, vwap_reclaim, ORB, news_catalyst`);
   console.log(`   Risk:       max ${SETTINGS.MAX_OPEN_POSITIONS} positions | $${SETTINGS.MAX_DAILY_LOSS_USD}/day loss cap\n`);
 
-  // Warm the scan cache on boot
-  getScan(true).then(s => console.log(`✅ Initial scan: ${s.runners.length} runners, ${s.signals.length} signals`))
-    .catch(e => console.error('Initial scan failed:', e.message));
+  // Warm the scan cache on boot (respects the market-hours gate)
+  console.log(`   Gate:       ${SETTINGS.MARKET_GATE_ENABLED ? `ON (${SETTINGS.SCAN_EXTENDED_HOURS ? 'extended hours 04:00–20:00 ET' : 'regular hours 09:30–16:00 ET'})` : 'OFF (always scan)'}\n`);
+  getScan(true).then(s => {
+    if (s.marketStatus && !s.marketStatus.active) {
+      console.log(`⏸️  Scanner idle — ${s.marketStatus.reason} (${s.marketStatus.etTime})`);
+    } else {
+      console.log(`✅ Initial scan: ${s.runners.length} runners, ${s.signals.length} signals`);
+    }
+  }).catch(e => console.error('Initial scan failed:', e.message));
 });
