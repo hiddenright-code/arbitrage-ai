@@ -167,14 +167,22 @@ export async function fetchMinuteBars(symbol, minutes = 390) {
 }
 
 // ─── Calculate RVOL from history + today's volume ─────────────
-// Uses 20-day average (excluding today) as baseline
+// Baseline = MEDIAN of the trailing 20 sessions (excluding today), not the
+// mean. A stock's own prior runner days are giant volume spikes that sit in
+// the lookback window and inflate a mean baseline — which masks a fresh
+// re-ignition off the base (e.g. SOAR: 20-day mean 153k vs median 19k, so a
+// 156k day reads 1.0x on the mean but 8x on the median). Median is robust to
+// the stock's own history.
 export function calculateRvol(todayVolume, dailyBars) {
   if (!dailyBars || dailyBars.length < 5) return 1.0;
-  const hist = dailyBars.slice(-21, -1);   // Exclude today's bar
-  if (!hist.length) return 1.0;
-  const avg = hist.reduce((s, b) => s + b.volume, 0) / hist.length;
-  if (avg === 0) return 1.0;
-  return +(todayVolume / avg).toFixed(2);
+  const vols = dailyBars.slice(-21, -1).map(b => b.volume).filter(v => v > 0);
+  if (!vols.length) return 1.0;
+  const sorted = [...vols].sort((a, b) => a - b);
+  const mid    = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const base   = median || (vols.reduce((s, v) => s + v, 0) / vols.length);
+  if (base <= 0) return 1.0;
+  return +(todayVolume / base).toFixed(2);
 }
 
 // ─── Latest cached daily bars for a symbol ───────────────────
