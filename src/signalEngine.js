@@ -212,22 +212,36 @@ function vwapReclaimSignal(symbol, minuteBars, snapshot, newsData) {
 // ─── 4. Opening Range Breakout (ORB) ─────────────────────────
 // First 15 minutes of trading sets the opening range.
 // Breakout above the high of that range = bullish ORB signal.
+
+// Minutes since ET midnight for a bar timestamp (DST-safe — the old
+// UTC-hour check both hardcoded EDT and rejected e.g. 14:05 because
+// its minute field was < 30).
+const ET_HM_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+});
+function etMinutesOfDay(ts) {
+  const p = Object.fromEntries(ET_HM_FMT.formatToParts(new Date(ts)).map(x => [x.type, x.value]));
+  return (Number(p.hour) % 24) * 60 + Number(p.minute);
+}
+
 function orbSignal(symbol, minuteBars, snapshot, newsData) {
   if (!minuteBars || minuteBars.length < 20) return null;
 
   const price = snapshot.price;
 
-  // Identify opening range: first 15 min bars (sorted chronologically)
-  // Bars are sorted asc by time, so first bars = market open
-  const todayStart = minuteBars.findIndex(b => {
-    const d = new Date(b.timestamp);
-    return d.getUTCHours() >= 13 && d.getUTCMinutes() >= 30;  // 9:30 AM ET = 13:30 UTC
-  });
+  // Identify opening range: first 15 min bars at/after 9:30 ET.
+  // If the 9:30 open isn't inside our bar window (afternoon scans only
+  // carry the last ~2h), there is no opening range to break — skip
+  // rather than fabricate one from midday bars. ORB is a morning pattern.
+  const RTH_OPEN   = 9 * 60 + 30;
+  const todayStart = minuteBars.findIndex(b => etMinutesOfDay(b.timestamp) >= RTH_OPEN);
+  if (todayStart < 0) return null;
+  // The matched bar must actually BE the open (within the first 15 min),
+  // not just any later bar — an afternoon-only window matches at 12:00
+  // and would fabricate a fake "opening range" otherwise.
+  if (etMinutesOfDay(minuteBars[todayStart].timestamp) >= RTH_OPEN + 15) return null;
 
-  const orbBars = todayStart >= 0
-    ? minuteBars.slice(todayStart, todayStart + 15)
-    : minuteBars.slice(0, 15);
-
+  const orbBars = minuteBars.slice(todayStart, todayStart + 15);
   if (orbBars.length < 5) return null;
 
   const orbHigh = Math.max(...orbBars.map(b => b.high));
@@ -352,6 +366,17 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
     // Per symbol: take the highest-confidence signal only
     if (candidates.length) {
       const best = candidates.sort((a, b) => b.confidence - a.confidence)[0];
+
+      // Spread guard — penny quotes can be untradeably wide. With an 8%
+      // stop, an 8%+ spread loses the trade at fill time; these are the
+      // "paper wins" that never materialize live. Attach quote context so
+      // the sim can also fill at the ask instead of the last trade.
+      const bid = snapshot.bid ?? 0, ask = snapshot.ask ?? 0;
+      if (bid > 0 && ask > bid) {
+        const spreadPct = (ask - bid) / ((ask + bid) / 2);
+        if (spreadPct > SETTINGS.MAX_SPREAD_PCT) continue;
+        best.bid = bid; best.ask = ask; best.spreadPct = +spreadPct.toFixed(4);
+      }
 
       // Multi-day catalyst boost — a name whose catalyst has already been
       // confirming/holding for days is higher conviction than a same-day

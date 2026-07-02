@@ -413,4 +413,16 @@ app.listen(PORT, () => {
     sweep();   // initial
     setInterval(sweep, SETTINGS.CATALYST.SCAN_INTERVAL_MS);
   }
+
+  // ─── Real-position reconciler ───────────────────────────────
+  // Bracket TP/SL fills happen at the broker; book them (daily-loss cap,
+  // cooldowns, freed slots) even when no dashboard is polling /api/signals.
+  // No-ops instantly when there are no tracked positions.
+  setInterval(() => {
+    managePositions().then(actions => {
+      for (const a of actions) {
+        if (a.closed) console.log(`[Positions] ${a.symbol}: ${a.reason} | PnL $${(a.pnlUSD ?? 0).toFixed(2)}`);
+      }
+    }).catch(e => console.error('[Positions] reconcile failed:', e.message));
+  }, 60_000);
 });

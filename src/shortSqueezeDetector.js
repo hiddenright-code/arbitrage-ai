@@ -110,9 +110,10 @@ function fuelFromRealData(si) {
 // Fallback fuel estimate from volume patterns (no real SI data).
 // Surging volume against a normally-quiet name implies a trapped base.
 function fuelFromEstimate(snapshot, dailyBars) {
+  // Prefer the scanner's time-adjusted RVOL when it's on the snapshot
   const hist   = dailyBars?.slice(-21, -1) ?? [];
   const avgVol = hist.length ? hist.reduce((s, b) => s + b.volume, 0) / hist.length : 0;
-  const rvol   = avgVol > 0 ? snapshot.volume / avgVol : 1;
+  const rvol   = snapshot.rvol ?? (avgVol > 0 ? snapshot.volume / avgVol : 1);
 
   let est;
   if (rvol >= 15) est = 0.80;
@@ -162,10 +163,10 @@ function scoreGapUp(open, prevClose) {
   return 0;
 }
 
-function scoreRvol(volume, dailyBars) {
+function scoreRvol(volume, dailyBars, precomputed = null) {
   const hist   = dailyBars?.slice(-21, -1) ?? [];
   const avgVol = hist.length ? hist.reduce((s, b) => s + b.volume, 0) / hist.length : 0;
-  const rvol   = avgVol > 0 ? volume / avgVol : 1;
+  const rvol   = precomputed ?? (avgVol > 0 ? volume / avgVol : 1);
   if (rvol >= 15) return 1.00;
   if (rvol >= 10) return 0.80;
   if (rvol >= 5)  return 0.55;
@@ -197,7 +198,7 @@ function ignitionScore(snapshot, dailyBars, floatShares) {
     ['volumeToFloat', scoreVolumeToFloat(volume, floatShares), SQ.IGNITION_WEIGHTS.volumeToFloat],
     ['velocity',      scoreVelocity(price, dailyLow),          SQ.IGNITION_WEIGHTS.velocity],
     ['gapUp',         scoreGapUp(open, prevClose),             SQ.IGNITION_WEIGHTS.gapUp],
-    ['rvol',          scoreRvol(volume, dailyBars),            SQ.IGNITION_WEIGHTS.rvol],
+    ['rvol',          scoreRvol(volume, dailyBars, snapshot.rvol ?? null), SQ.IGNITION_WEIGHTS.rvol],
     ['consecutive',   scoreConsecutive(consecutiveUpDays(dailyBars)), SQ.IGNITION_WEIGHTS.consecutive],
   ].filter(([, score]) => score != null);
 

@@ -26,6 +26,8 @@ const minuteCache   = {};  // symbol → { bars, lastFetch }
 const snapshotCache = {};  // symbol → { data, lastFetch }
 const CACHE_TTL     = SETTINGS.CACHE_TTL_MS;
 const MIN_CACHE_TTL = 60_000;  // 1 min cache for minute bars
+// Snapshots feed live signal prices — keep them fresher than the scan cadence
+const SNAP_TTL      = SETTINGS.SNAPSHOT_TTL_MS ?? 25_000;
 
 // ─── Alpaca GET helper ────────────────────────────────────────
 async function alpacaGet(path) {
@@ -58,7 +60,7 @@ export async function fetchSnapshots(symbols) {
 
   const uncached = symbols.filter(s => {
     const e = snapshotCache[s];
-    return !e || now - e.lastFetch >= CACHE_TTL;
+    return !e || now - e.lastFetch >= SNAP_TTL;
   });
 
   if (uncached.length) {
@@ -150,14 +152,17 @@ export async function fetchMinuteBars(symbol, minutes = 390) {
   if (cached && now - cached.lastFetch < MIN_CACHE_TTL) return cached.bars;
 
   try {
+    // sort=desc so `limit` keeps the LATEST bars (asc+limit returns the
+    // first N minutes of the day — afternoon scans were analyzing stale
+    // morning data). Flip back to ascending for the indicator math.
     const data = await alpacaGet(
-      `/v2/stocks/${symbol}/bars?timeframe=1Min&limit=${minutes}&feed=${FEED}&sort=asc`
+      `/v2/stocks/${symbol}/bars?timeframe=1Min&limit=${minutes}&feed=${FEED}&sort=desc`
     );
     const bars = (data.bars ?? []).map(b => ({
       timestamp: new Date(b.t).getTime(),
       open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
       vwap: b.vw ?? 0,
-    }));
+    })).reverse();
     minuteCache[symbol] = { bars, lastFetch: now };
     return bars;
   } catch (err) {
@@ -167,22 +172,56 @@ export async function fetchMinuteBars(symbol, minutes = 390) {
 }
 
 // ─── Calculate RVOL from history + today's volume ─────────────
-// Baseline = MEDIAN of the trailing 20 sessions (excluding today), not the
-// mean. A stock's own prior runner days are giant volume spikes that sit in
-// the lookback window and inflate a mean baseline — which masks a fresh
-// re-ignition off the base (e.g. SOAR: 20-day mean 153k vs median 19k, so a
-// 156k day reads 1.0x on the mean but 8x on the median). Median is robust to
-// the stock's own history.
+// Two refinements over the naive todayVolume / 20-day-mean:
+//
+//   MEDIAN baseline — a stock's own prior runner days are giant volume
+//   spikes inside the lookback that inflate a mean baseline and mask a
+//   fresh re-ignition off the base (e.g. SOAR: 20-day mean 153k vs median
+//   19k — a 156k day reads 1.0x on the mean but 8x on the median).
+//
+//   TIME-OF-DAY pacing — today's volume is PARTIAL until the close, so a
+//   full-day baseline understates RVOL all morning, the exact window
+//   where runners are born (a stock pacing 5x at 10am read ~0.6x and got
+//   filtered out). We compare against the volume expected *by this time
+//   of day*, so "RVOL 3x" means the same thing at 10:00 as at 15:55.
+
+const ET_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' });
+const ET_HM  = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+});
+
+function etMinutesNow() {
+  const p = Object.fromEntries(ET_HM.formatToParts(new Date()).map(x => [x.type, x.value]));
+  return (Number(p.hour) % 24) * 60 + Number(p.minute);
+}
+
+// Fraction of a normal day's volume expected by now. Linear pacing over
+// the 390-min RTH session, floored at 5% so pre-market/first-minutes
+// RVOL is a meaningful pace rather than a divide-by-almost-zero.
+function sessionVolumeFraction() {
+  const m = etMinutesNow();
+  const open = 9 * 60 + 30, close = 16 * 60;
+  if (m >= close || m < 4 * 60) return 1;   // after close / overnight: day complete
+  if (m <= open) return 0.05;               // pre-market floor
+  return Math.max((m - open) / 390, 0.05);
+}
+
 export function calculateRvol(todayVolume, dailyBars) {
   if (!dailyBars || dailyBars.length < 5) return 1.0;
-  const vols = dailyBars.slice(-21, -1).map(b => b.volume).filter(v => v > 0);
+  const today = ET_DAY.format(new Date());
+  const vols = dailyBars
+    .filter(b => ET_DAY.format(new Date(b.timestamp)) !== today)  // drop today's partial bar
+    .slice(-20)
+    .map(b => b.volume)
+    .filter(v => v > 0);
   if (!vols.length) return 1.0;
   const sorted = [...vols].sort((a, b) => a - b);
   const mid    = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   const base   = median || (vols.reduce((s, v) => s + v, 0) / vols.length);
   if (base <= 0) return 1.0;
-  return +(todayVolume / base).toFixed(2);
+  const expectedByNow = base * sessionVolumeFraction();
+  return +(todayVolume / expectedByNow).toFixed(2);
 }
 
 // ─── Latest cached daily bars for a symbol ───────────────────

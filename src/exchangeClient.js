@@ -131,6 +131,27 @@ export async function closePosition(symbol) {
   }
 }
 
+// Fetch one order with its bracket legs — the authoritative record of
+// whether the entry filled and which exit leg (TP or SL) closed it.
+export async function getOrder(orderId, nested = true) {
+  try {
+    return await alpacaRequest('GET', `/v2/orders/${orderId}${nested ? '?nested=true' : ''}`);
+  } catch (err) {
+    console.error('[Broker] getOrder:', err.message);
+    return null;
+  }
+}
+
+// Cancel one order (and its unfilled bracket legs)
+export async function cancelOrder(orderId) {
+  try {
+    await alpacaRequest('DELETE', `/v2/orders/${orderId}`);
+    return true;
+  } catch {
+    return false;  // already filled/canceled is fine
+  }
+}
+
 // Cancel all open orders (used by emergency stop)
 export async function cancelAllOrders() {
   try {

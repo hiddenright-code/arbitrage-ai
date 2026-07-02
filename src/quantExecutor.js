@@ -11,7 +11,8 @@
 // ─────────────────────────────────────────────────────────────
 
 import dotenv from 'dotenv';
-import { placeBracketOrder, getBuyingPower, closePosition } from './exchangeClient.js';
+import { placeBracketOrder, getBuyingPower, closePosition, getOrder, cancelOrder } from './exchangeClient.js';
+import { fetchSnapshots } from './priceHistory.js';
 import { SETTINGS } from './config.js';
 import { SIGNAL_TYPES } from './signalEngine.js';
 
@@ -104,11 +105,22 @@ export function openSimPosition(signal) {
   );
   if (recentSL) return null;
 
+  // Fill at the ask when we have a sane quote — a buyer pays the spread,
+  // and pretending to fill at the last trade inflates sim stats on wide
+  // penny spreads. (Cap at +5% over last in case the quote is stale.)
+  const entryPrice = signal.ask && signal.ask >= signal.price && signal.ask <= signal.price * 1.05
+    ? signal.ask
+    : signal.price;
+
   const pos = {
     symbol:     signal.symbol,
     strategy:   signal.strategy,
     confidence: signal.confidence,
-    entryPrice: signal.price,
+    entryPrice,
+    // Track observed extremes SINCE ENTRY — the daily high/low includes
+    // pre-entry action and produced phantom TP/SL fills in the sim.
+    highSince:  entryPrice,
+    lowSince:   entryPrice,
     takeProfit: signal.takeProfit,
     stopLoss:   signal.stopLoss,
     capital:    SIM_CAPITAL,
@@ -131,17 +143,23 @@ export function checkSimPositions(snapshotMap) {
     if (!snap) continue;
 
     const currentPrice = snap.price;
-    const high         = snap.dailyHigh || currentPrice;
-    const low          = snap.dailyLow  || currentPrice;
+
+    // Only price action observed AFTER entry counts. Daily high/low
+    // include pre-entry moves (a morning dip below a 2pm entry's stop is
+    // not a stop-out), which silently corrupted the validation stats.
+    pos.highSince = Math.max(pos.highSince ?? pos.entryPrice, currentPrice);
+    pos.lowSince  = Math.min(pos.lowSince  ?? pos.entryPrice, currentPrice);
 
     let exitPrice  = null;
     let exitReason = null;
 
-    if (low <= pos.stopLoss) {
-      exitPrice  = pos.stopLoss;
+    if (pos.lowSince <= pos.stopLoss) {
+      // A stop is a market order once touched — if price gapped straight
+      // through, fill at the observed price, not the stop (models slippage).
+      exitPrice  = Math.min(pos.stopLoss, currentPrice);
       exitReason = 'stop_loss';
-    } else if (high >= pos.takeProfit) {
-      exitPrice  = pos.takeProfit;
+    } else if (pos.highSince >= pos.takeProfit) {
+      exitPrice  = pos.takeProfit;   // limit order — fills at its price
       exitReason = 'take_profit';
     } else if (Date.now() - pos.openedAt > MAX_HOLD_MS) {
       exitPrice  = currentPrice;
@@ -306,25 +324,69 @@ export async function executeQuantSignal(signal, confirmed = false) {
   return { success: true, order, position: openPositions[signal.symbol], tradeUSD, qty };
 }
 
-// ─── Manage real positions (time-based exit safety net) ──────
-// Alpaca brackets handle TP/SL automatically; this enforces the
-// max-hold time limit (must be flat before close) and reconciles state.
-export async function managePositions(snapshotMap) {
+// ─── Manage real positions ────────────────────────────────────
+// Alpaca brackets fill TP/SL at the broker, so the broker's order record
+// is the source of truth. Without reconciling against it, a stopped-out
+// position stayed "open" here forever: the loss never hit the daily-loss
+// cap or cooldowns, and the slot never freed for a new trade. This also
+// enforces the max-hold time exit (must be flat before close).
+export async function managePositions(snapshotMap = {}) {
   const actions = [];
+  const symbols = Object.keys(openPositions);
+  if (!symbols.length) return actions;
+
+  // Fill in any missing snapshots so time-exit PnL uses a real price
+  const missing = symbols.filter(s => !snapshotMap[s]);
+  if (missing.length) {
+    try { Object.assign(snapshotMap, await fetchSnapshots(missing)); } catch {}
+  }
 
   for (const [symbol, pos] of Object.entries(openPositions)) {
-    const snap = snapshotMap[symbol];
-    const currentPrice = snap?.price ?? pos.entryPrice;
-    const pnlPct = (currentPrice - pos.entryPrice) / pos.entryPrice;
-    const pnlUSD = pnlPct * pos.tradeUSD;
+    // 1. Reconcile against the bracket order.
+    const order = pos.orderId ? await getOrder(pos.orderId) : null;
+    if (order) {
+      const filledQty = Number(order.filled_qty ?? 0);
 
-    if (Date.now() - pos.openedAt > MAX_HOLD_MS) {
-      try {
-        await closePosition(symbol);
+      // Entry never filled and the order is dead → no trade happened.
+      if (['canceled', 'expired', 'rejected'].includes(order.status) && filledQty === 0) {
+        delete openPositions[symbol];
+        actions.push({ symbol, reason: `Entry ${order.status} unfilled`, pnlUSD: 0, closed: true });
+        continue;
+      }
+
+      // An exit leg filled → the broker closed the position; book it.
+      const exitLeg = (order.legs ?? []).find(l => l.status === 'filled');
+      if (exitLeg) {
+        const entryPx = Number(order.filled_avg_price ?? pos.entryPrice);
+        const exitPx  = Number(exitLeg.filled_avg_price ?? exitLeg.limit_price ?? exitLeg.stop_price ?? pos.entryPrice);
+        const pnlUSD  = (exitPx - entryPx) * pos.qty;
         recordTradeResult(pnlUSD, pos.strategy);
         if (pnlUSD < 0) symbolCooldown[symbol] = Date.now();
         delete openPositions[symbol];
-        actions.push({ symbol, reason: 'Time exit (max hold)', currentPrice, pnlUSD, pnlPct, closed: true });
+        const reason = exitLeg.type === 'limit' ? 'Take-profit filled' : 'Stop-loss filled';
+        actions.push({ symbol, reason, exitPrice: exitPx, pnlUSD, closed: true });
+        console.log(`🔁 ${symbol} ${reason} @ $${exitPx} | PnL $${pnlUSD.toFixed(2)}`);
+        continue;
+      }
+    }
+
+    // 2. Time-based exit safety net
+    if (Date.now() - pos.openedAt > MAX_HOLD_MS) {
+      const currentPrice = snapshotMap[symbol]?.price ?? pos.entryPrice;
+      const pnlPct = (currentPrice - pos.entryPrice) / pos.entryPrice;
+      const pnlUSD = pnlPct * pos.tradeUSD;
+      const entryFilled = order ? Number(order.filled_qty ?? 0) > 0 : true;
+      try {
+        // Cancel the bracket first — Alpaca refuses to close a position
+        // that still has open orders against it.
+        if (pos.orderId) await cancelOrder(pos.orderId);
+        if (entryFilled) {
+          await closePosition(symbol);
+          recordTradeResult(pnlUSD, pos.strategy);
+          if (pnlUSD < 0) symbolCooldown[symbol] = Date.now();
+        }
+        delete openPositions[symbol];
+        actions.push({ symbol, reason: 'Time exit (max hold)', currentPrice, pnlUSD: entryFilled ? pnlUSD : 0, pnlPct, closed: true });
         console.log(`⏰ ${symbol} time-exit closed | PnL $${pnlUSD.toFixed(2)}`);
       } catch (err) {
         actions.push({ symbol, reason: 'Time exit', closed: false, error: err.message });

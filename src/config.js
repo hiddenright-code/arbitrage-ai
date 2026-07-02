@@ -192,7 +192,15 @@ export const SETTINGS = {
   // ── Scanning ─────────────────────────────────────────────────
   SCAN_INTERVAL_MS:     30_000,   // 30s during market hours
   PRE_MARKET_SCAN_MS:  120_000,   // 2 min in pre-market
-  CACHE_TTL_MS:    5 * 60 * 1000, // 5 min general cache
+  CACHE_TTL_MS:    5 * 60 * 1000, // 5 min general cache (bars, slow data)
+  // Snapshots must be fresher than the scan cadence — signals priced off
+  // a 5-min-old quote on a fast penny mover are worthless.
+  SNAPSHOT_TTL_MS: 25_000,
+  // Parallel per-symbol history fetches per scan (Alpaca rate-limit guard)
+  SCANNER_CONCURRENCY: 8,
+  // Reject signals whose bid/ask spread exceeds this fraction of mid —
+  // with an 8% stop, an 8%+ spread means the trade loses before it starts.
+  MAX_SPREAD_PCT: 0.08,
 
   // ── Candle History ───────────────────────────────────────────
   DAILY_BARS_LOOKBACK:  30,       // 30 trading days for RVOL avg

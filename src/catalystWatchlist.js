@@ -58,6 +58,15 @@ function etDate() {
   }).format(new Date());   // 'YYYY-MM-DD'
 }
 
+// Weekends must not burn watchlist days — a Friday catalyst would lose 2
+// of its N expiry days to Sat/Sun with zero trading in between.
+function isEtWeekend() {
+  const wd = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', weekday: 'short',
+  }).format(new Date());
+  return wd === 'Sat' || wd === 'Sun';
+}
+
 // ─── Persistence ──────────────────────────────────────────────
 function persistPath() {
   return path.isAbsolute(CFG.PERSIST_PATH)
@@ -225,8 +234,8 @@ export async function updateConfirmation() {
     const snap = snaps[sym];
     if (!snap || !snap.price) continue;
 
-    // Tick the day-counter once per ET trading date.
-    if (e.lastDate !== today) {
+    // Tick the day-counter once per ET trading date (weekends don't count).
+    if (e.lastDate !== today && !isEtWeekend()) {
       e.dayCount += 1;
       e.lastDate  = today;
       e.history.push({ date: today, price: snap.price, volume: snap.volume });

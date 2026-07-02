@@ -214,12 +214,16 @@ export async function scanRunners() {
 
   if (!pennySymbols.length) return { runners: [], building: [] };
 
-  // 4. Fetch daily bars for RVOL calculation (batched but serial to avoid rate limits)
+  // 4. Fetch history + score each candidate through a small worker pool —
+  //    an unbounded Promise.all over ~100 symbols (2 requests each) bursts
+  //    straight into Alpaca's rate limit.
   const runners  = [];
   const building = [];   // pre-run "BUILDING" setups (anticipation tier)
+  const queue    = [...pennySymbols];
 
-  await Promise.all(
-    pennySymbols.map(async (symbol) => {
+  async function scoreWorker() {
+    while (queue.length) {
+      const symbol = queue.shift();
       try {
         const snap = snapshots[symbol];
 
@@ -256,7 +260,7 @@ export async function scanRunners() {
             vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
             scannedAt: Date.now(),
           });
-          return;
+          continue;
         }
 
         // ── Paused but still IN-PLAY: keep it surfaced (don't drop) ───
@@ -273,12 +277,12 @@ export async function scanRunners() {
               vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
               scannedAt: Date.now(),
             });
-            return;
+            continue;
           }
         }
 
         // ── Not yet running → score the pre-run SETUP (anticipation) ──
-        if (!ANTICIPATION.ENABLED) return;
+        if (!ANTICIPATION.ENABLED) continue;
         const squeeze      = detectSqueezeSetup(snap, dailyBars, null);   // estimated fuel
         const anticipation = scoreAnticipation({ snapshot: snap, dailyBars, squeeze, catalyst });
         if (isBuilding(anticipation, snap, catalyst)) {
@@ -292,8 +296,11 @@ export async function scanRunners() {
       } catch (err) {
         console.error(`[Scanner] ${symbol} error:`, err.message);
       }
-    })
-  );
+    }
+  }
+
+  const poolSize = Math.min(SETTINGS.SCANNER_CONCURRENCY ?? 8, queue.length || 1);
+  await Promise.all(Array.from({ length: poolSize }, scoreWorker));
 
   if (INPLAY.ENABLED) pruneInPlay();   // expire faded names, persist registry
 

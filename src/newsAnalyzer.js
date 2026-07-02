@@ -133,7 +133,9 @@ export async function analyzeNews(symbol) {
   if (cached && now - cached.lastFetch < CACHE_TTL) return cached.result;
 
   try {
-    const url = `${DATA_URL}/v2/news?symbols=${symbol}&limit=10&sort=desc&feed=iex`;
+    // Alpaca's news API lives under v1beta1 (there is no /v2/news — the
+    // old path 404'd on every call, so catalyst boosts never fired).
+    const url = `${DATA_URL}/v1beta1/news?symbols=${symbol}&limit=10&sort=desc`;
     const res = await fetch(url, { headers: alpacaHeaders });
     if (!res.ok) throw new Error(`${res.status}`);
 
