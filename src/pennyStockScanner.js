@@ -53,6 +53,7 @@ import {
   fetchDailyBars,
   fetchMinuteBars,
   calculateRvol,
+  etToday,
 } from './priceHistory.js';
 import { getActiveSymbols, getCatalystContext } from './catalystWatchlist.js';
 import { detectSqueezeSetup } from './shortSqueezeDetector.js';
@@ -221,11 +222,21 @@ export async function scanRunners() {
   const building = [];   // pre-run "BUILDING" setups (anticipation tier)
   const queue    = [...pennySymbols];
 
+  const today = etToday();
+
   async function scoreWorker() {
     while (queue.length) {
       const symbol = queue.shift();
       try {
         const snap = snapshots[symbol];
+
+        // Staleness gate: until a symbol prints TODAY, its snapshot daily
+        // bar is still yesterday's — price, volume and changePct all
+        // describe the prior session. Scoring it would re-signal
+        // yesterday's runners every pre-market (and the time-of-day RVOL
+        // pacing would inflate a completed day's volume ~20x at 4am).
+        // Skip until fresh prints exist.
+        if (snap.dailyBarDate && snap.dailyBarDate !== today) continue;
 
         // Fetch 30 days of daily bars to compute RVOL baseline
         const dailyBars = await fetchDailyBars(symbol, 30);

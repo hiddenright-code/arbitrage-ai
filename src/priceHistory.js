@@ -94,6 +94,10 @@ export async function fetchSnapshots(symbols) {
             changePct: +changePct.toFixed(2),
             bid:       snap.latestQuote?.bp ?? price,
             ask:       snap.latestQuote?.ap ?? price,
+            // ET date of the daily bar — until a symbol prints today, this
+            // is YESTERDAY, and price/volume/changePct all describe the
+            // prior session (see the staleness skip in the scanner).
+            dailyBarDate: snap.dailyBar?.t ? ET_DAY.format(new Date(snap.dailyBar.t)) : null,
             timestamp: now,
           },
         };
@@ -227,4 +231,10 @@ export function calculateRvol(todayVolume, dailyBars) {
 // ─── Latest cached daily bars for a symbol ───────────────────
 export function getCachedDailyBars(symbol) {
   return barCache[symbol]?.bars ?? [];
+}
+
+// Today's ET calendar date — shared so the scanner can compare it against
+// a snapshot's dailyBarDate.
+export function etToday() {
+  return ET_DAY.format(new Date());
 }
