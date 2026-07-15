@@ -30,7 +30,7 @@ import { detectSqueezeSetup } from './src/shortSqueezeDetector.js';
 import { getShortInterest, getShortInterestMulti, getProviderStatus } from './src/shortInterestData.js';
 import { assessMarketHealth } from './src/regimeDetector.js';
 import { generateSignals } from './src/signalEngine.js';
-import { fetchSnapshots, fetchDailyBars, fetchMinuteBars } from './src/priceHistory.js';
+import { fetchSnapshots, fetchDailyBarsMulti, fetchMinuteBarsMulti } from './src/priceHistory.js';
 import {
   executeQuantSignal, managePositions,
   getOpenPositions, getTradeStats,
@@ -72,26 +72,28 @@ async function runScanPipeline() {
   for (const r of runners) floatMap[r.symbol] = r.snapshot.floatShares ?? null;
   const siMap = await getShortInterestMulti(symbols, floatMap);
 
-  const squeezeMap    = {};
-  const minuteBarsMap = {};
-  await Promise.all(
-    runners.map(async (r) => {
-      const dailyBars = await fetchDailyBars(r.symbol, 30);
-      const si        = siMap[r.symbol] ?? null;
-      // Backfill real free float onto the snapshot so all downstream
-      // float math (squeeze + scoring) uses ground-truth when available
-      if (si?.freeFloat) r.snapshot.floatShares = si.freeFloat;
-      squeezeMap[r.symbol]    = detectSqueezeSetup(r.snapshot, dailyBars, si);
-      minuteBarsMap[r.symbol] = await fetchMinuteBars(r.symbol, 120);
-      // Stash real SI (float / cost-to-borrow) on the in-play registry so the
-      // next scan can score this name on its true float and keep it alive
-      // while shorts are pressured.
-      if (si?.hasRealData) {
-        markInPlay(r.symbol, { price: r.price, rvol: r.rvol, changePct: r.changePct },
-          { freeFloat: si.freeFloat, costToBorrow: si.costToBorrow, siPercentFloat: si.siPercentFloat });
-      }
-    })
-  );
+  // Batched: one daily-bars and one minute-bars request for the whole
+  // runner set (both usually cache hits — the scanner just fetched them).
+  const [dailyMap, minuteBarsMap] = await Promise.all([
+    fetchDailyBarsMulti(symbols, 30),
+    fetchMinuteBarsMulti(symbols, 120),
+  ]);
+
+  const squeezeMap = {};
+  for (const r of runners) {
+    const si = siMap[r.symbol] ?? null;
+    // Backfill real free float onto the snapshot so all downstream
+    // float math (squeeze + scoring) uses ground-truth when available
+    if (si?.freeFloat) r.snapshot.floatShares = si.freeFloat;
+    squeezeMap[r.symbol] = detectSqueezeSetup(r.snapshot, dailyMap[r.symbol], si);
+    // Stash real SI (float / cost-to-borrow) on the in-play registry so the
+    // next scan can score this name on its true float and keep it alive
+    // while shorts are pressured.
+    if (si?.hasRealData) {
+      markInPlay(r.symbol, { price: r.price, rvol: r.rvol, changePct: r.changePct },
+        { freeFloat: si.freeFloat, costToBorrow: si.costToBorrow, siPercentFloat: si.siPercentFloat });
+    }
+  }
 
   // 3. Market health gate
   const marketHealth = assessMarketHealth(indexSnaps);

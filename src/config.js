@@ -176,12 +176,16 @@ export const SETTINGS = {
   // volume the runner scanner keys off. Entries still trigger intraday.
   CATALYST: {
     ENABLED:        process.env.CATALYST_WATCHLIST !== 'false',
-    NEWS_FEED_LIMIT: Number(process.env.CATALYST_NEWS_LIMIT) || 50,
-    MIN_CATALYST_SCORE: 0.55,   // bullish strength required to add a name
+    NEWS_FEED_LIMIT: Number(process.env.CATALYST_NEWS_LIMIT) || 50,   // first-sweep page size
+    MAX_ARTICLES_PER_SWEEP: 250,  // cap when catching up via the news cursor
+    MAX_AGE_HOURS:  48,           // catalyst must be fresh to admit a name
+    MIN_CATALYST_SCORE: 0.55,     // net recency-weighted score for HARD catalysts
+    SOFT_MIN_SCORE:     0.75,     // higher bar for SOFT (sentiment-type) catalysts
     PRICE_MAX:      Number(process.env.CATALYST_PRICE_MAX) || 10,  // track a bit above $5 to catch pre-run names
     WATCHLIST_MAX_DAYS: 10,     // expire a name after N trading days w/o a run
     MAX_WATCHLIST:  60,
     FADE_DROP_PCT:  0.15,       // >15% below catalyst price ⇒ FADING
+    DRAWDOWN_FADE_PCT: 0.30,    // 30% retrace off the post-catalyst high ⇒ FADING (dump phase)
     SCAN_INTERVAL_MS: Number(process.env.CATALYST_SCAN_MS) || 10 * 60 * 1000,  // slow layer cadence
     PERSIST_PATH:   process.env.CATALYST_PERSIST_PATH || 'data/watchlist.json',
   },

@@ -126,61 +126,77 @@ export function scoreArticle(article) {
   };
 }
 
-// ─── Fetch and analyze news for a symbol ─────────────────────
-export async function analyzeNews(symbol) {
-  const now    = Date.now();
-  const cached = newsCache[symbol];
-  if (cached && now - cached.lastFetch < CACHE_TTL) return cached.result;
-
-  try {
-    // Alpaca's news API lives under v1beta1 (there is no /v2/news — the
-    // old path 404'd on every call, so catalyst boosts never fired).
-    const url = `${DATA_URL}/v1beta1/news?symbols=${symbol}&limit=10&sort=desc`;
-    const res = await fetch(url, { headers: alpacaHeaders });
-    if (!res.ok) throw new Error(`${res.status}`);
-
-    const data     = await res.json();
-    const articles = data.news ?? [];
-
-    if (!articles.length) {
-      const result = { symbol, catalystScore: 0, catalysts: [], articles: [], hasCatalyst: false };
-      newsCache[symbol] = { lastFetch: now, result };
-      return result;
-    }
-
-    // Score each article, take best bullish + worst bearish
-    const scored     = articles.map(scoreArticle);
-    const bestBull   = Math.max(...scored.map(a => a.bullScore * a.recencyMult), 0);
-    const worstBear  = Math.max(...scored.map(a => a.bearScore * a.recencyMult), 0);
-    const catalysts  = scored.flatMap(a => a.catalysts);
-    const netScore   = +(bestBull - worstBear).toFixed(3);
-
-    const result = {
-      symbol,
-      catalystScore: netScore,
-      hasCatalyst:   netScore > 0.30,
-      isBearish:     netScore < -0.30,
-      catalysts:     [...new Map(catalysts.map(c => [c.label, c])).values()],
-      topHeadline:   scored[0]?.headline ?? null,
-      topSource:     scored[0]?.source   ?? null,
-      topAgeHours:   scored[0]?.ageHours ?? null,
-      articles:      scored.slice(0, 5),
-    };
-
-    newsCache[symbol] = { lastFetch: now, result };
-    return result;
-  } catch (err) {
-    console.error(`[News] ${symbol}: ${err.message}`);
-    const result = { symbol, catalystScore: 0, catalysts: [], articles: [], hasCatalyst: false };
-    newsCache[symbol] = { lastFetch: now, result };
-    return result;
+// ─── Build the per-symbol result from its scored articles ────
+function buildResult(symbol, articles) {
+  if (!articles.length) {
+    return { symbol, catalystScore: 0, catalysts: [], articles: [], hasCatalyst: false };
   }
+
+  // Score each article, take best bullish + worst bearish
+  const scored     = articles.map(scoreArticle);
+  const bestBull   = Math.max(...scored.map(a => a.bullScore * a.recencyMult), 0);
+  const worstBear  = Math.max(...scored.map(a => a.bearScore * a.recencyMult), 0);
+  const catalysts  = scored.flatMap(a => a.catalysts);
+  const netScore   = +(bestBull - worstBear).toFixed(3);
+
+  return {
+    symbol,
+    catalystScore: netScore,
+    hasCatalyst:   netScore > 0.30,
+    isBearish:     netScore < -0.30,
+    catalysts:     [...new Map(catalysts.map(c => [c.label, c])).values()],
+    topHeadline:   scored[0]?.headline ?? null,
+    topSource:     scored[0]?.source   ?? null,
+    topAgeHours:   scored[0]?.ageHours ?? null,
+    articles:      scored.slice(0, 5),
+  };
 }
 
 // ─── Batch news for multiple symbols ─────────────────────────
+// One request per chunk of symbols instead of one per symbol — articles
+// come back tagged with their symbols[] so they regroup cleanly. Alpaca's
+// news API lives under v1beta1 (there is no /v2/news — the old path
+// 404'd on every call, so catalyst boosts never fired).
 export async function analyzeNewsMulti(symbols) {
-  const results = await Promise.all(symbols.map(analyzeNews));
-  const map     = {};
-  for (const r of results) map[r.symbol] = r;
+  const now = Date.now();
+  const map = {};
+
+  const uncached = [];
+  for (const s of [...new Set(symbols)]) {
+    const cached = newsCache[s];
+    if (cached && now - cached.lastFetch < CACHE_TTL) map[s] = cached.result;
+    else uncached.push(s);
+  }
+
+  // Chunk small enough that one symbol's news flood can't crowd the
+  // others out of the shared `limit` window.
+  for (let i = 0; i < uncached.length; i += 10) {
+    const chunk = uncached.slice(i, i + 10);
+    let bySymbol = Object.fromEntries(chunk.map(s => [s, []]));
+    try {
+      const url = `${DATA_URL}/v1beta1/news?symbols=${chunk.join(',')}&limit=50&sort=desc`;
+      const res = await fetch(url, { headers: alpacaHeaders });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      for (const article of (data.news ?? [])) {
+        for (const sym of (article.symbols ?? [])) {
+          if (bySymbol[sym] && bySymbol[sym].length < 10) bySymbol[sym].push(article);
+        }
+      }
+    } catch (err) {
+      console.error(`[News] batch (${chunk.join(',')}): ${err.message}`);
+    }
+    for (const sym of chunk) {
+      const result = buildResult(sym, bySymbol[sym]);
+      newsCache[sym] = { lastFetch: now, result };
+      map[sym] = result;
+    }
+  }
+
   return map;
+}
+
+// ─── Single-symbol wrapper ────────────────────────────────────
+export async function analyzeNews(symbol) {
+  return (await analyzeNewsMulti([symbol]))[symbol];
 }

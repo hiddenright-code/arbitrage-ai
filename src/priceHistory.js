@@ -119,60 +119,122 @@ export async function fetchSnapshot(symbol) {
   return snaps[symbol] ?? null;
 }
 
-// ─── Fetch daily bars (for RVOL average + trend) ──────────────
-export async function fetchDailyBars(symbol, days = 30) {
-  const now = Date.now();
-  const cached = barCache[symbol];
-  if (cached && now - cached.lastFetch < CACHE_TTL) return cached.bars;
+// ─── Batched multi-symbol bars ────────────────────────────────
+// Alpaca's /v2/stocks/bars accepts a comma-separated symbol list and
+// returns bars grouped per symbol — ONE request instead of N. Bars are
+// the scan loop's hottest path (daily bars for every candidate, minute
+// bars for every runner, every cycle), so everything below is batched;
+// the single-symbol exports delegate here.
 
-  try {
-    // A `start` is REQUIRED here: without it, Alpaca's daily-bars default
-    // window returns only TODAY's bar — which silently broke RVOL for every
-    // symbol (calculateRvol saw <5 bars and fell back to 1.0, so nothing ever
-    // cleared RVOL ≥3x). Bound the window generously and take the most recent
-    // days+1 bars with sort=desc, then flip to ascending. (asc+limit would
-    // return the OLDEST bars in the window, not the newest — also wrong.)
-    const start = new Date(now - (days * 2 + 10) * 86_400_000).toISOString().slice(0, 10);
-    const data = await alpacaGet(
-      `/v2/stocks/${symbol}/bars?timeframe=1Day&start=${start}&limit=${days + 1}&feed=${FEED}&sort=desc`
-    );
-    const bars = (data.bars ?? []).map(b => ({
-      timestamp: new Date(b.t).getTime(),
-      open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
-      vwap: b.vw ?? 0,
-    })).reverse();   // desc (newest-first) → ascending (today last)
-    barCache[symbol] = { bars, lastFetch: now };
-    return bars;
-  } catch (err) {
-    console.error(`[PriceHistory] fetchDailyBars ${symbol}:`, err.message);
-    return barCache[symbol]?.bars ?? [];
+const mapBar = (b) => ({
+  timestamp: new Date(b.t).getTime(),
+  open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
+  vwap: b.vw ?? 0,
+});
+
+// GET one batched bars query, following pagination. Returns { SYM: [raw bars] }.
+async function batchedBars(symbols, params, maxPages = 5) {
+  const out = {};
+  let pageToken = null;
+  for (let page = 0; page < maxPages; page++) {
+    const url = `/v2/stocks/bars?symbols=${symbols.join(',')}&${params}`
+              + (pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : '');
+    const data = await alpacaGet(url);
+    for (const [sym, bars] of Object.entries(data.bars ?? {})) {
+      (out[sym] ??= []).push(...bars);
+    }
+    pageToken = data.next_page_token;
+    if (!pageToken) break;
   }
+  return out;
 }
 
-// ─── Fetch intraday minute bars ───────────────────────────────
-export async function fetchMinuteBars(symbol, minutes = 390) {
-  const now = Date.now();
-  const cached = minuteCache[symbol];
-  if (cached && now - cached.lastFetch < MIN_CACHE_TTL) return cached.bars;
+// Start of today's extended session (04:00 ET) as an ISO timestamp.
+function sessionStartISO() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', year: 'numeric', month: '2-digit',
+      day: '2-digit', timeZoneName: 'longOffset',
+    }).formatToParts(new Date()).map(p => [p.type, p.value])
+  );
+  const offset = parts.timeZoneName.replace('GMT', '') || '-05:00';  // e.g. '-04:00'
+  return `${parts.year}-${parts.month}-${parts.day}T04:00:00${offset}`;
+}
 
-  try {
-    // sort=desc so `limit` keeps the LATEST bars (asc+limit returns the
-    // first N minutes of the day — afternoon scans were analyzing stale
-    // morning data). Flip back to ascending for the indicator math.
-    const data = await alpacaGet(
-      `/v2/stocks/${symbol}/bars?timeframe=1Min&limit=${minutes}&feed=${FEED}&sort=desc`
-    );
-    const bars = (data.bars ?? []).map(b => ({
-      timestamp: new Date(b.t).getTime(),
-      open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
-      vwap: b.vw ?? 0,
-    })).reverse();
-    minuteCache[symbol] = { bars, lastFetch: now };
-    return bars;
-  } catch (err) {
-    console.error(`[PriceHistory] fetchMinuteBars ${symbol}:`, err.message);
-    return minuteCache[symbol]?.bars ?? [];
+// ─── Daily bars for many symbols in one request ───────────────
+// A `start` is REQUIRED: without it, Alpaca's daily-bars default window
+// returns only TODAY's bar — which silently broke RVOL for every symbol
+// (calculateRvol saw <5 bars and fell back to 1.0, so nothing ever
+// cleared RVOL ≥3x). Bound the window generously, fetch ascending, and
+// keep each symbol's most recent days+1 bars (today last).
+export async function fetchDailyBarsMulti(symbols, days = 30) {
+  const now = Date.now();
+  const uncached = [...new Set(symbols)].filter(s => {
+    const c = barCache[s];
+    return !c || now - c.lastFetch >= CACHE_TTL;
+  });
+
+  if (uncached.length) {
+    const start = new Date(now - (days * 2 + 10) * 86_400_000).toISOString().slice(0, 10);
+    const params = `timeframe=1Day&start=${start}&limit=10000&feed=${FEED}&sort=asc`;
+    // Chunk to keep URLs bounded and stay under the per-request bar cap
+    for (let i = 0; i < uncached.length; i += 50) {
+      const chunk = uncached.slice(i, i + 50);
+      try {
+        const grouped = await batchedBars(chunk, params);
+        for (const sym of chunk) {
+          barCache[sym] = { bars: (grouped[sym] ?? []).map(mapBar).slice(-(days + 1)), lastFetch: now };
+        }
+      } catch (err) {
+        console.error(`[PriceHistory] fetchDailyBarsMulti (${chunk.length} syms):`, err.message);
+      }
+    }
   }
+
+  const result = {};
+  for (const s of symbols) result[s] = barCache[s]?.bars ?? [];
+  return result;
+}
+
+// ─── Today's minute bars for many symbols in one request ──────
+// Bounded to today's extended session (from 04:00 ET) so intraday
+// indicators can never see a prior session's tape — the multi-symbol
+// endpoint has no per-symbol limit, and "latest N bars" without a date
+// bound would happily hand an afternoon scan yesterday's morning.
+export async function fetchMinuteBarsMulti(symbols, minutes = 390) {
+  const now = Date.now();
+  const uncached = [...new Set(symbols)].filter(s => {
+    const c = minuteCache[s];
+    return !c || now - c.lastFetch >= MIN_CACHE_TTL;
+  });
+
+  if (uncached.length) {
+    const params = `timeframe=1Min&start=${encodeURIComponent(sessionStartISO())}&limit=10000&feed=${FEED}&sort=asc`;
+    for (let i = 0; i < uncached.length; i += 25) {
+      const chunk = uncached.slice(i, i + 25);
+      try {
+        const grouped = await batchedBars(chunk, params);
+        for (const sym of chunk) {
+          minuteCache[sym] = { bars: (grouped[sym] ?? []).map(mapBar), lastFetch: now };
+        }
+      } catch (err) {
+        console.error(`[PriceHistory] fetchMinuteBarsMulti (${chunk.length} syms):`, err.message);
+      }
+    }
+  }
+
+  const result = {};
+  for (const s of symbols) result[s] = (minuteCache[s]?.bars ?? []).slice(-minutes);
+  return result;
+}
+
+// ─── Single-symbol wrappers (delegate to the batched path) ────
+export async function fetchDailyBars(symbol, days = 30) {
+  return (await fetchDailyBarsMulti([symbol], days))[symbol] ?? [];
+}
+
+export async function fetchMinuteBars(symbol, minutes = 390) {
+  return (await fetchMinuteBarsMulti([symbol], minutes))[symbol] ?? [];
 }
 
 // ─── Calculate RVOL from history + today's volume ─────────────

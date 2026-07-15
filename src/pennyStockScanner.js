@@ -50,8 +50,8 @@ import { computeAll } from './indicators.js';
 import {
   fetchMostActive,
   fetchSnapshots,
-  fetchDailyBars,
-  fetchMinuteBars,
+  fetchDailyBarsMulti,
+  fetchMinuteBarsMulti,
   calculateRvol,
   etToday,
 } from './priceHistory.js';
@@ -215,92 +215,121 @@ export async function scanRunners() {
 
   if (!pennySymbols.length) return { runners: [], building: [] };
 
-  // 4. Fetch history + score each candidate through a small worker pool —
-  //    an unbounded Promise.all over ~100 symbols (2 requests each) bursts
-  //    straight into Alpaca's rate limit.
-  const runners  = [];
-  const building = [];   // pre-run "BUILDING" setups (anticipation tier)
-  const queue    = [...pennySymbols];
+  // 4. Fetch history in BATCHED multi-symbol requests (one daily-bars call
+  //    for every candidate, one minute-bars call for the names that need
+  //    them) instead of per-symbol fan-out — the old worker pool made
+  //    ~2 requests per symbol per scan; this makes ~2 total.
 
   const today = etToday();
 
-  async function scoreWorker() {
-    while (queue.length) {
-      const symbol = queue.shift();
+  // 4a. Staleness gate: until a symbol prints TODAY, its snapshot daily
+  //     bar is still yesterday's — price, volume and changePct all
+  //     describe the prior session. Scoring it would re-signal
+  //     yesterday's runners every pre-market (and the time-of-day RVOL
+  //     pacing would inflate a completed day's volume ~20x at 4am).
+  const fresh = pennySymbols.filter(symbol => {
+    const d = snapshots[symbol].dailyBarDate;
+    return !d || d === today;
+  });
+  if (!fresh.length) return { runners: [], building: [] };
+
+  const dailyMap = await fetchDailyBarsMulti(fresh, 30);
+
+  // 4b. Compute RVOL and triage each candidate: confirmed RUNNER,
+  //     still-IN_PLAY, or anticipation-only.
+  const runnerSyms = [];                  // pass the runner gate now
+  const inPlayKept = new Map();           // symbol → updated in-play entry
+  const anticipate = [];                  // neither → score the setup
+
+  for (const symbol of fresh) {
+    const snap = snapshots[symbol];
+    snap.rvol  = calculateRvol(snap.volume, dailyMap[symbol]);
+    const inPlayCtx = INPLAY.ENABLED ? getInPlay(symbol) : null;
+
+    // Feed REAL float (from prior ORTEX/FINRA enrichment) into scoring so
+    // a tiny-float name isn't scored as neutral.
+    if (inPlayCtx?.si?.freeFloat) snap.floatShares = inPlayCtx.si.freeFloat;
+
+    if (snap.rvol >= MIN_RVOL && snap.changePct >= MIN_CHANGE_PCT) {
+      runnerSyms.push(symbol);
+    } else if (inPlayCtx) {
+      // Paused but still IN-PLAY: keep it surfaced (don't drop). A name
+      // that popped earlier and is now consolidating stays tracked for a
+      // second leg instead of being re-judged dead each scan.
+      const updated = updateInPlay(symbol, { price: snap.price, rvol: snap.rvol, changePct: snap.changePct });
+      if (updated && updated.status !== 'FADED') inPlayKept.set(symbol, updated);
+      else anticipate.push(symbol);
+    } else {
+      anticipate.push(symbol);
+    }
+  }
+
+  // 4c. One batched minute-bars call for everything that gets scored.
+  const needMinutes = [...runnerSyms, ...inPlayKept.keys()];
+  const minuteMap   = needMinutes.length ? await fetchMinuteBarsMulti(needMinutes, 120) : {};
+
+  const runners  = [];
+  const building = [];   // pre-run "BUILDING" setups (anticipation tier)
+
+  // 4d. Confirmed RUNNERS: move already underway (RVOL + momentum).
+  for (const symbol of runnerSyms) {
+    try {
+      const snap  = snapshots[symbol];
+      const score = scoreCandidate({ symbol, snapshot: snap, dailyBars: dailyMap[symbol], minuteBars: minuteMap[symbol] });
+      let tier    = classifySignal(score.total);
+
+      // Passing the runner gate (RVOL ≥3 + up ≥5%) IS the bar to be
+      // tracked. The composite score should only RANK runners, never
+      // discard one — this was the SOAR bug: RVOL ~6x and +7%, but +7%
+      // only scores 0.20 momentum, dragging the blend to SKIP and getting
+      // the name thrown away. A gate-passer is now at least WATCH; the
+      // ORTEX/FINRA enrichment (float, 241% borrow, SI) then ranks it.
+      const softScore = tier === 'SKIP';
+      if (softScore) tier = 'WATCH';
+
+      const entry = INPLAY.ENABLED ? markInPlay(symbol, { price: snap.price, rvol: snap.rvol, changePct: snap.changePct }) : null;
+      runners.push({
+        symbol, tier, score, snapshot: snap, catalyst: getCatalystContext(symbol),
+        inPlay: entry, inPlayRescued: softScore, rvol: snap.rvol,
+        changePct: snap.changePct, price: snap.price, volume: snap.volume,
+        vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
+        scannedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error(`[Scanner] ${symbol} error:`, err.message);
+    }
+  }
+
+  // 4e. Still-IN_PLAY names (kept alive through the pause).
+  for (const [symbol, updated] of inPlayKept) {
+    try {
+      const snap  = snapshots[symbol];
+      const score = scoreCandidate({ symbol, snapshot: snap, dailyBars: dailyMap[symbol], minuteBars: minuteMap[symbol] });
+      runners.push({
+        symbol, tier: 'IN_PLAY', score, snapshot: snap, catalyst: getCatalystContext(symbol),
+        inPlay: updated, rvol: snap.rvol,
+        changePct: snap.changePct, price: snap.price, volume: snap.volume,
+        vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
+        scannedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error(`[Scanner] ${symbol} error:`, err.message);
+    }
+  }
+
+  // 4f. Not yet running → score the pre-run SETUP (anticipation).
+  if (ANTICIPATION.ENABLED) {
+    for (const symbol of anticipate) {
       try {
-        const snap = snapshots[symbol];
-
-        // Staleness gate: until a symbol prints TODAY, its snapshot daily
-        // bar is still yesterday's — price, volume and changePct all
-        // describe the prior session. Scoring it would re-signal
-        // yesterday's runners every pre-market (and the time-of-day RVOL
-        // pacing would inflate a completed day's volume ~20x at 4am).
-        // Skip until fresh prints exist.
-        if (snap.dailyBarDate && snap.dailyBarDate !== today) continue;
-
-        // Fetch 30 days of daily bars to compute RVOL baseline
-        const dailyBars = await fetchDailyBars(symbol, 30);
-        const rvol      = calculateRvol(snap.volume, dailyBars);
-        snap.rvol       = rvol;
-        const catalyst  = getCatalystContext(symbol);   // null unless on the watchlist
-        const inPlayCtx = INPLAY.ENABLED ? getInPlay(symbol) : null;
-
-        // Feed REAL float (from prior ORTEX/FINRA enrichment) into scoring so
-        // a tiny-float name isn't scored as neutral.
-        if (inPlayCtx?.si?.freeFloat) snap.floatShares = inPlayCtx.si.freeFloat;
-
-        // ── Confirmed RUNNER: move already underway (RVOL + momentum) ──
-        if (rvol >= MIN_RVOL && snap.changePct >= MIN_CHANGE_PCT) {
-          const minuteBars = await fetchMinuteBars(symbol, 120);
-          const score      = scoreCandidate({ symbol, snapshot: snap, dailyBars, minuteBars });
-          let tier         = classifySignal(score.total);
-
-          // Passing the runner gate (RVOL ≥3 + up ≥5%) IS the bar to be
-          // tracked. The composite score should only RANK runners, never
-          // discard one — this was the SOAR bug: RVOL ~6x and +7%, but +7%
-          // only scores 0.20 momentum, dragging the blend to SKIP and getting
-          // the name thrown away. A gate-passer is now at least WATCH; the
-          // ORTEX/FINRA enrichment (float, 241% borrow, SI) then ranks it.
-          const softScore = tier === 'SKIP';
-          if (softScore) tier = 'WATCH';
-
-          const entry = INPLAY.ENABLED ? markInPlay(symbol, { price: snap.price, rvol, changePct: snap.changePct }) : null;
-          runners.push({
-            symbol, tier, score, snapshot: snap, catalyst, inPlay: entry, inPlayRescued: softScore, rvol,
-            changePct: snap.changePct, price: snap.price, volume: snap.volume,
-            vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
-            scannedAt: Date.now(),
-          });
-          continue;
-        }
-
-        // ── Paused but still IN-PLAY: keep it surfaced (don't drop) ───
-        // A name that popped earlier and is now consolidating stays tracked
-        // for a second leg instead of being re-judged dead each scan.
-        if (INPLAY.ENABLED && inPlayCtx) {
-          const updated = updateInPlay(symbol, { price: snap.price, rvol, changePct: snap.changePct });
-          if (updated && updated.status !== 'FADED') {
-            const minuteBars = await fetchMinuteBars(symbol, 120);
-            const score      = scoreCandidate({ symbol, snapshot: snap, dailyBars, minuteBars });
-            runners.push({
-              symbol, tier: 'IN_PLAY', score, snapshot: snap, catalyst, inPlay: updated, rvol,
-              changePct: snap.changePct, price: snap.price, volume: snap.volume,
-              vwap: snap.vwap, dailyHigh: snap.dailyHigh, dailyLow: snap.dailyLow,
-              scannedAt: Date.now(),
-            });
-            continue;
-          }
-        }
-
-        // ── Not yet running → score the pre-run SETUP (anticipation) ──
-        if (!ANTICIPATION.ENABLED) continue;
-        const squeeze      = detectSqueezeSetup(snap, dailyBars, null);   // estimated fuel
-        const anticipation = scoreAnticipation({ snapshot: snap, dailyBars, squeeze, catalyst });
+        const snap      = snapshots[symbol];
+        const catalyst  = getCatalystContext(symbol);
+        const squeeze   = detectSqueezeSetup(snap, dailyMap[symbol], null);   // estimated fuel
+        const anticipation = scoreAnticipation({ snapshot: snap, dailyBars: dailyMap[symbol], squeeze, catalyst });
         if (isBuilding(anticipation, snap, catalyst)) {
           building.push({
             symbol, tier: 'BUILDING', readiness: anticipation.readiness,
             setupScore: anticipation.setupScore, anticipation, squeeze, catalyst,
-            snapshot: snap, rvol, changePct: snap.changePct, price: snap.price,
+            snapshot: snap, rvol: snap.rvol, changePct: snap.changePct, price: snap.price,
             volume: snap.volume, vwap: snap.vwap, scannedAt: Date.now(),
           });
         }
@@ -309,9 +338,6 @@ export async function scanRunners() {
       }
     }
   }
-
-  const poolSize = Math.min(SETTINGS.SCANNER_CONCURRENCY ?? 8, queue.length || 1);
-  await Promise.all(Array.from({ length: poolSize }, scoreWorker));
 
   if (INPLAY.ENABLED) pruneInPlay();   // expire faded names, persist registry
 
