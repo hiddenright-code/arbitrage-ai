@@ -2,6 +2,15 @@
 // CONFIG.JS — Penny Stock Runner Bot Settings
 // ─────────────────────────────────────────────────────────────
 
+// Load .env HERE, before SETTINGS is built. This module reads process.env
+// in its body, and ES-module imports are evaluated before the importer's
+// own code — so a dotenv.config() in server.js runs too late: every
+// env-driven setting (ORTEX/FINRA enablement, feed, toggles) would be
+// baked in as undefined for anyone using a .env file. (It masked itself
+// in environments where the keys are real exported env vars.)
+import dotenv from 'dotenv';
+dotenv.config();
+
 export const SETTINGS = {
 
   // ── Broker ───────────────────────────────────────────────────
