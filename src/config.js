@@ -83,6 +83,26 @@ export const SETTINGS = {
     // Only allow these strategies to trade (comma list; empty = all).
     STRATEGIES_ENABLED: (process.env.STRATEGIES_ENABLED ?? '')
       .split(',').map(s => s.trim()).filter(Boolean),
+
+    // ── Round 3: literature-grounded ruleset (defaults from the books,
+    // NOT fitted to our windows; RULESET=baseline disables all of it) ──
+    // Diagnosis it responds to: entries were late (confidence≈lateness)
+    // and 52% of trades died on a fixed 8% stop sitting inside penny
+    // noise. Sources: Gao/Han/Li/Zhou (intraday momentum concentrates at
+    // the open), Kaufman TS&M + ATR-stop studies (volatility-scaled
+    // stops beat fixed %), Tharp (R-multiple reward:risk).
+    RULESET: process.env.RULESET ?? 'v2',   // 'v2' | 'baseline'
+    // New entries only during the opening momentum regime (ET minutes).
+    ENTRY_WINDOW_START: Number(process.env.ENTRY_WINDOW_START) || 9 * 60 + 35,
+    ENTRY_WINDOW_END:   Number(process.env.ENTRY_WINDOW_END)   || 11 * 60 + 30,
+    // Anti-lateness: reject entries more than this far above VWAP.
+    MAX_VWAP_EXTENSION: Number(process.env.MAX_VWAP_EXTENSION) || 0.10,
+    // Volatility-scaled exits: stop = 2×ATR(1min) below entry (clamped),
+    // target = 2R above it. Replaces fixed 8%/25% brackets.
+    ATR_STOP_MULT:  Number(process.env.ATR_STOP_MULT)  || 2.0,
+    R_MULTIPLE:     Number(process.env.R_MULTIPLE)     || 2.0,
+    MIN_STOP_PCT:   0.03,    // clamp: never tighter than 3%…
+    MAX_STOP_PCT:   0.12,    // …never wider than 12%
   },
 
   // ── Anticipation Tier ("BUILDING" — pre-run setups) ──────────

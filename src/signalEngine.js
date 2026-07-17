@@ -37,7 +37,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import { SETTINGS } from './config.js';
-import { computeAll, vwap } from './indicators.js';
+import { computeAll, vwap, atr } from './indicators.js';
 
 export const SIGNAL_TYPES = {
   BUY:  'BUY',
@@ -378,12 +378,52 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
         const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
         if (TUNE.STRATEGIES_ENABLED?.length && !TUNE.STRATEGIES_ENABLED.includes(s.strategy)) return false;
         if (TUNE.ENTRY_REQUIRE_VWAP && !(snapshot.vwap > 0 && snapshot.price > snapshot.vwap)) return false;
+
+        // ── Ruleset v2 gates (literature-grounded; RULESET=baseline off) ──
+        if (TUNE.RULESET === 'v2') {
+          // Session time comes from the DATA (last minute bar), not the
+          // wall clock — so replay and live agree. No tape → no entry.
+          const lastBar = minuteBars?.[minuteBars.length - 1];
+          if (!lastBar) return false;
+          const m = etMinutesOfDay(lastBar.timestamp);
+          // 1. Opening momentum regime only — intraday momentum edges
+          //    concentrate near the open; midday is chop (Gao et al.).
+          if (m < TUNE.ENTRY_WINDOW_START || m > TUNE.ENTRY_WINDOW_END) return false;
+          // 2. Anti-lateness: never buy far above VWAP — high "confidence"
+          //    measured extension, and extension mean-reverts intraday.
+          if (!(snapshot.vwap > 0 && snapshot.price > snapshot.vwap)) return false;
+          if (snapshot.price > snapshot.vwap * (1 + TUNE.MAX_VWAP_EXTENSION)) return false;
+        }
         return true;
       });
 
     // Per symbol: take the highest-confidence signal only
     if (candidates.length) {
       const best = candidates.sort((a, b) => b.confidence - a.confidence)[0];
+
+      // ── Ruleset v2 exits: volatility-scaled stop + R-multiple target ──
+      // A fixed 8% stop sits INSIDE the noise band of a stock moving 20%
+      // intraday (52% of backtested trades died by stop), and a flat +25%
+      // target ignores per-stock risk. Restructure: stop = ATR_STOP_MULT ×
+      // ATR(1min) below entry (clamped to sane bounds, and never tighter
+      // than the strategy's structural stop), target = R_MULTIPLE × the
+      // actual risk. Kaufman (volatility-scaled stops) + Tharp (R-multiples).
+      const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
+      if (TUNE.RULESET === 'v2' && minuteBars?.length >= 15) {
+        const a = atr(minuteBars.slice(-30), 14);
+        if (a > 0 && best.price > 0) {
+          const riskPct = Math.min(Math.max((TUNE.ATR_STOP_MULT * a) / best.price, TUNE.MIN_STOP_PCT), TUNE.MAX_STOP_PCT);
+          const atrStop = best.price * (1 - riskPct);
+          // Widest of (structural stop, ATR stop) — outside the noise.
+          const stop    = Math.min(best.stopLoss ?? atrStop, atrStop);
+          const risk    = best.price - stop;
+          best.stopLoss   = +stop.toFixed(4);
+          best.takeProfit = +(best.price + TUNE.R_MULTIPLE * risk).toFixed(4);
+          best.takeProfitAggressive = +(best.price + (TUNE.R_MULTIPLE + 1) * risk).toFixed(4);
+          best.exitModel  = `atr(${TUNE.ATR_STOP_MULT}x)·${TUNE.R_MULTIPLE}R`;
+          best.riskPct    = +(risk / best.price).toFixed(4);
+        }
+      }
 
       // Spread guard — penny quotes can be untradeably wide. With an 8%
       // stop, an 8%+ spread loses the trade at fill time; these are the
