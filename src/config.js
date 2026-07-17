@@ -103,6 +103,10 @@ export const SETTINGS = {
     R_MULTIPLE:     Number(process.env.R_MULTIPLE)     || 2.0,
     MIN_STOP_PCT:   0.03,    // clamp: never tighter than 3%…
     MAX_STOP_PCT:   0.12,    // …never wider than 12%
+    // Only trade short_squeeze when REAL SI (ORTEX/FINRA) backs the fuel.
+    // Estimated-fuel squeeze signals were the worst performer in every
+    // backtest window — the estimate is momentum re-labeled.
+    SQUEEZE_REQUIRE_REAL_SI: process.env.SQUEEZE_REQUIRE_REAL_SI !== 'false',
   },
 
   // ── Anticipation Tier ("BUILDING" — pre-run setups) ──────────

@@ -120,6 +120,14 @@ function volumeSurgeSignal(runner, newsData, squeezeData) {
 function shortSqueezeSignal(runner, newsData, squeezeData) {
   if (!squeezeData?.isSqueezePlay) return null;
   if (squeezeData.squeezeScore < 0.35) return null;
+  // Only trade a squeeze whose FUEL is real (ORTEX/FINRA SI present).
+  // Squeeze signals built on volume-estimated fuel were the worst
+  // performer in every backtest window (PF 0.42–0.73) — the estimate is
+  // ignition re-labeled, so the signal double-counts momentum. Live scans
+  // have real SI for covered tickers; replay (no historical SI) simply
+  // won't produce squeeze trades, which is the honest representation.
+  if ((SETTINGS.STRATEGY_TUNING?.SQUEEZE_REQUIRE_REAL_SI ?? true)
+      && !squeezeData.shortInterest) return null;   // null ⇔ no real SI behind the fuel
 
   const { symbol, snapshot } = runner;
   const { price, rvol, changePct } = snapshot;
