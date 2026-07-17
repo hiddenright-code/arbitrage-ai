@@ -370,7 +370,16 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
       vwapReclaimSignal(symbol, minuteBars, snapshot, newsData),
       orbSignal(symbol, minuteBars, snapshot, newsData),
       newsCatalystSignal(symbol, snapshot, newsData),
-    ].filter(Boolean);
+    ].filter(Boolean)
+      // Class-level tuning gates (default off). Applied to the CANDIDATE
+      // list — not one label — so a blocked entry can't re-enter under a
+      // different strategy name (the substitution failure of round 1).
+      .filter(s => {
+        const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
+        if (TUNE.STRATEGIES_ENABLED?.length && !TUNE.STRATEGIES_ENABLED.includes(s.strategy)) return false;
+        if (TUNE.ENTRY_REQUIRE_VWAP && !(snapshot.vwap > 0 && snapshot.price > snapshot.vwap)) return false;
+        return true;
+      });
 
     // Per symbol: take the highest-confidence signal only
     if (candidates.length) {

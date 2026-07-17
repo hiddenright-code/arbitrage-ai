@@ -75,6 +75,14 @@ export const SETTINGS = {
     VOLUME_SURGE_MIN_CONF: Number(process.env.VOLUME_SURGE_MIN_CONF) || 0,
     // Require price above VWAP for volume_surge entries (structure gate).
     VOLUME_SURGE_REQUIRE_VWAP: process.env.VOLUME_SURGE_REQUIRE_VWAP === 'true',
+    // A/B round 2 — the label-level gates above failed via substitution
+    // (blocked volume_surge trades re-entered as short_squeeze on the
+    // same names). These act on the ENTRY CLASS instead:
+    // Require price above VWAP for EVERY entry, regardless of strategy.
+    ENTRY_REQUIRE_VWAP: process.env.ENTRY_REQUIRE_VWAP === 'true',
+    // Only allow these strategies to trade (comma list; empty = all).
+    STRATEGIES_ENABLED: (process.env.STRATEGIES_ENABLED ?? '')
+      .split(',').map(s => s.trim()).filter(Boolean),
   },
 
   // ── Anticipation Tier ("BUILDING" — pre-run setups) ──────────

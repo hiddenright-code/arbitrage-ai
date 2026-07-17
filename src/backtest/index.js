@@ -155,6 +155,8 @@ async function main() {
   const variant = [
     S.STRATEGY_TUNING.VOLUME_SURGE_MIN_CONF > 0 ? `vsconf${S.STRATEGY_TUNING.VOLUME_SURGE_MIN_CONF}` : null,
     S.STRATEGY_TUNING.VOLUME_SURGE_REQUIRE_VWAP ? 'vsvwap' : null,
+    S.STRATEGY_TUNING.ENTRY_REQUIRE_VWAP ? 'entryvwap' : null,
+    S.STRATEGY_TUNING.STRATEGIES_ENABLED?.length ? `only-${S.STRATEGY_TUNING.STRATEGIES_ENABLED.join('+')}` : null,
   ].filter(Boolean).join('-') || 'baseline';
   const outFile = path.join(outDir, `bt-${start}_${end}_${variant}.json`);
   fs.writeFileSync(outFile, JSON.stringify({ meta, stats, trades: allTrades }, null, 2));
