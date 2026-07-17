@@ -135,13 +135,28 @@ async function main() {
 
   // 4. Stats + persistence
   const stats = computeStats(allTrades, spyDays, args.capital);
+  // SPY buy-and-hold over the same window — "outperforming the market"
+  // means beating this line, not just being green.
+  const spyWindow = (daily.SPY ?? []).filter(b => {
+    const d = etDateOfTimestamp(b.timestamp);
+    return d >= start && d <= end;
+  });
+  const spyReturnPct = spyWindow.length >= 2
+    ? +(((spyWindow.at(-1).close - spyWindow[0].close) / spyWindow[0].close) * 100).toFixed(2)
+    : null;
   const meta  = { start, end, tickMinutes: args.tick, slippageBps: args.slippage,
-                  universeSize: universe.length, generatedAt: new Date().toISOString() };
+                  universeSize: universe.length, spyReturnPct,
+                  tuning: { ...S.STRATEGY_TUNING },
+                  generatedAt: new Date().toISOString() };
   printReport(stats, meta);
 
   const outDir = path.join(process.cwd(), 'data', 'backtests');
   fs.mkdirSync(outDir, { recursive: true });
-  const outFile = path.join(outDir, `bt-${start}_${end}.json`);
+  const variant = [
+    S.STRATEGY_TUNING.VOLUME_SURGE_MIN_CONF > 0 ? `vsconf${S.STRATEGY_TUNING.VOLUME_SURGE_MIN_CONF}` : null,
+    S.STRATEGY_TUNING.VOLUME_SURGE_REQUIRE_VWAP ? 'vsvwap' : null,
+  ].filter(Boolean).join('-') || 'baseline';
+  const outFile = path.join(outDir, `bt-${start}_${end}_${variant}.json`);
   fs.writeFileSync(outFile, JSON.stringify({ meta, stats, trades: allTrades }, null, 2));
   console.log(`Full trade list + stats saved → ${path.relative(process.cwd(), outFile)}\n`);
 }

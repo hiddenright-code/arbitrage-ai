@@ -103,7 +103,13 @@ export function printReport(stats, meta) {
 
   console.log(`  Trades: ${o.trades}   Win rate: ${o.winRate}%   Profit factor: ${o.profitFactor}`);
   console.log(`  Expectancy: ${o.expectancyPct}%/trade   Avg win: $${o.avgWin}  Avg loss: -$${o.avgLoss}   Avg hold: ${o.avgHoldMin}m`);
-  console.log(`  Equity: $${e.start} → $${e.end}  (${e.returnPct >= 0 ? '+' : ''}${e.returnPct}%)   MaxDD: ${e.maxDrawdownPct}%   Sharpe(d): ${e.sharpe}\n`);
+  console.log(`  Equity: $${e.start} → $${e.end}  (${e.returnPct >= 0 ? '+' : ''}${e.returnPct}%)   MaxDD: ${e.maxDrawdownPct}%   Sharpe(d): ${e.sharpe}`);
+  if (meta.spyReturnPct != null) {
+    const beat = e.returnPct - meta.spyReturnPct;
+    console.log(`  Benchmark: SPY buy-and-hold same window ${meta.spyReturnPct >= 0 ? '+' : ''}${meta.spyReturnPct}%  →  strategy ${beat >= 0 ? 'BEATS' : 'TRAILS'} market by ${beat.toFixed(2)}pp`);
+  }
+  const tune = Object.entries(meta.tuning ?? {}).filter(([, v]) => v);
+  console.log(`  Tuning: ${tune.length ? tune.map(([k, v]) => `${k}=${v}`).join(' · ') : 'baseline (no levers active)'}\n`);
 
   console.log('  Per strategy:');
   console.log(`    ${'strategy'.padEnd(24)}${pad('n', 5)}${pad('win%', 7)}${pad('PF', 7)}${pad('exp%/tr', 9)}${pad('P&L$', 9)}`);

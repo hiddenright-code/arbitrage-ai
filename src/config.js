@@ -65,6 +65,18 @@ export const SETTINGS = {
   MIN_SIGNAL_SCORE:       0.45,
   AUTO_EXECUTE_THRESHOLD: 0.75,
 
+  // ── Strategy Tuning (A/B-testable via env; defaults = baseline) ──
+  // Backtest finding (60d, 296 trades): volume_surge was 45% of trades
+  // and all of the net loss (PF 0.73) — chasing raw momentum without
+  // structure. These two levers gate it; both default OFF so behavior
+  // is unchanged until a variant wins an A/B through the harness.
+  STRATEGY_TUNING: {
+    // Strategy-specific confidence floor for volume_surge (0 = off).
+    VOLUME_SURGE_MIN_CONF: Number(process.env.VOLUME_SURGE_MIN_CONF) || 0,
+    // Require price above VWAP for volume_surge entries (structure gate).
+    VOLUME_SURGE_REQUIRE_VWAP: process.env.VOLUME_SURGE_REQUIRE_VWAP === 'true',
+  },
+
   // ── Anticipation Tier ("BUILDING" — pre-run setups) ──────────
   // The runner scanner only surfaces stocks already moving (up ≥5% + RVOL
   // ≥3x). This tier surfaces the SETUP *before* ignition: loaded squeeze

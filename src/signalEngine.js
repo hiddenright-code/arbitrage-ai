@@ -63,6 +63,12 @@ function volumeSurgeSignal(runner, newsData, squeezeData) {
 
   if (score.total < MIN_SIGNAL_SCORE) return null;
 
+  // Structure gate (A/B lever, default off): raw momentum chasing was the
+  // backtest's big loser — optionally require the stock to be holding
+  // above VWAP before a volume_surge entry is allowed.
+  const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
+  if (TUNE.VOLUME_SURGE_REQUIRE_VWAP && !(vwapPrice > 0 && price > vwapPrice)) return null;
+
   let confidence = score.total;
   const reasons  = [];
 
@@ -86,6 +92,9 @@ function volumeSurgeSignal(runner, newsData, squeezeData) {
     confidence = Math.min(confidence * squeezeMult, 1.0);
     reasons.push(`Squeeze pressure: ${squeezeData.intensity} (${squeezeData.reasons[0] ?? ''})`);
   }
+
+  // Strategy-specific confidence floor (A/B lever, default 0 = off).
+  if (TUNE.VOLUME_SURGE_MIN_CONF > 0 && confidence < TUNE.VOLUME_SURGE_MIN_CONF) return null;
 
   return {
     type:       SIGNAL_TYPES.BUY,
