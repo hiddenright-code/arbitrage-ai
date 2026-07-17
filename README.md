@@ -173,6 +173,37 @@ an aggressive extended target). Every real order is placed as an Alpaca
 The bot starts in **Simulation** mode. Real trading requires explicitly
 enabling Real Money mode in the UI **and** setting `ALPACA_PAPER=false`.
 
+## Backtesting
+
+Replay the **live strategy code** (same scanner/signal modules the bot
+trades with — not a reimplementation) over historical data:
+
+```bash
+npm run backtest                       # last 60 days
+npm run backtest -- --days 120        # longer window
+npm run backtest -- --start 2026-01-02 --end 2026-06-30
+npm run backtest -- --slippage 100 --tick 3 --capital 5000
+```
+
+Methodology (built to make results *worse*, not better):
+- **Survivorship-free universe** — active **and delisted** equities,
+  selected per-day by that day's price/volume, not today's survivors
+- **Split-adjusted bars** (a reverse split is not a +900% runner)
+- **No look-ahead** — decisions at tick T use bars ≤ T; fills happen on
+  *later* bars only (limit entries, gap-aware, stop-first when ambiguous)
+- **Slippage haircut** both sides (default 50bps — pennies have real spreads)
+- **Out-of-sample smell test** — stats reported for chronological halves;
+  an edge that only exists in one half is probably noise
+
+Output: console report (overall / per-strategy / per-exit / halves,
+profit factor, expectancy, max drawdown, Sharpe) plus a full trade list
+in `data/backtests/`. First run downloads and caches history in
+`data/backtest-cache/`; re-runs are incremental.
+
+Honest caveats: IEX-feed volumes (thin slice of the tape for pennies),
+and replayed signals get **no** news/catalyst/real-SI boosts — the live
+bot has more information than the backtest.
+
 ## Disclaimer
 This is a research and educational project. Penny stocks carry a high risk
 of total loss. Not financial advice. Trade at your own risk.

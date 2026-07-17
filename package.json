@@ -6,7 +6,8 @@
   "scripts": {
     "frontend": "vite",
     "backend": "node server.js",
-    "test-connection": "node src/testConnection.js"
+    "test-connection": "node src/testConnection.js",
+    "backtest": "node src/backtest/index.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

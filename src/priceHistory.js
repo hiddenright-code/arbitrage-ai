@@ -264,17 +264,20 @@ function etMinutesNow() {
 // Fraction of a normal day's volume expected by now. Linear pacing over
 // the 390-min RTH session, floored at 5% so pre-market/first-minutes
 // RVOL is a meaningful pace rather than a divide-by-almost-zero.
-function sessionVolumeFraction() {
-  const m = etMinutesNow();
+// `m` defaults to the current ET wall clock; the backtester passes the
+// historical minute-of-day so RVOL means the same thing in replay.
+function sessionVolumeFraction(m = etMinutesNow()) {
   const open = 9 * 60 + 30, close = 16 * 60;
   if (m >= close || m < 4 * 60) return 1;   // after close / overnight: day complete
   if (m <= open) return 0.05;               // pre-market floor
   return Math.max((m - open) / 390, 0.05);
 }
 
-export function calculateRvol(todayVolume, dailyBars) {
+// opts.atEtMinutes — minute-of-day to pace against (default: now).
+// opts.todayEtDate — the "today" whose partial bar to drop (default: real today).
+export function calculateRvol(todayVolume, dailyBars, opts = {}) {
   if (!dailyBars || dailyBars.length < 5) return 1.0;
-  const today = ET_DAY.format(new Date());
+  const today = opts.todayEtDate ?? ET_DAY.format(new Date());
   const vols = dailyBars
     .filter(b => ET_DAY.format(new Date(b.timestamp)) !== today)  // drop today's partial bar
     .slice(-20)
@@ -286,7 +289,7 @@ export function calculateRvol(todayVolume, dailyBars) {
   const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   const base   = median || (vols.reduce((s, v) => s + v, 0) / vols.length);
   if (base <= 0) return 1.0;
-  const expectedByNow = base * sessionVolumeFraction();
+  const expectedByNow = base * sessionVolumeFraction(opts.atEtMinutes);
   return +(todayVolume / expectedByNow).toFixed(2);
 }
 
