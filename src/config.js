@@ -91,7 +91,7 @@ export const SETTINGS = {
     // noise. Sources: Gao/Han/Li/Zhou (intraday momentum concentrates at
     // the open), Kaufman TS&M + ATR-stop studies (volatility-scaled
     // stops beat fixed %), Tharp (R-multiple reward:risk).
-    RULESET: process.env.RULESET ?? 'v2',   // 'v2' | 'baseline'
+    RULESET: process.env.RULESET ?? 'v2',   // 'v3' | 'v2' | 'baseline'
     // New entries only during the opening momentum regime (ET minutes).
     ENTRY_WINDOW_START: Number(process.env.ENTRY_WINDOW_START) || 9 * 60 + 35,
     ENTRY_WINDOW_END:   Number(process.env.ENTRY_WINDOW_END)   || 11 * 60 + 30,
@@ -103,6 +103,30 @@ export const SETTINGS = {
     R_MULTIPLE:     Number(process.env.R_MULTIPLE)     || 2.0,
     MIN_STOP_PCT:   0.03,    // clamp: never tighter than 3%…
     MAX_STOP_PCT:   0.12,    // …never wider than 12%
+
+    // ── Ruleset v3 (pre-registered from the cross-asset builds; only
+    // active when RULESET=v3, which implies all v2 rules too) ──────────
+    // 1. EQUAL-RISK SIZING (CTA vol-targeting, per-trade form). The
+    //    campaign proved confidence ≈ lateness, yet sizing scaled UP with
+    //    confidence — betting most on the latest entries. v3 sizes every
+    //    trade to the same dollar risk instead: qty = risk$ / (entry−stop).
+    //    With ATR stops, that IS per-trade vol targeting.
+    RISK_PER_TRADE_USD: Number(process.env.RISK_PER_TRADE_USD) || 2.50,
+    // 2. TRAILING EXITS (let winners run — Tharp R-multiples). A fixed 2R
+    //    target amputates the fat tails that define penny runners. v3:
+    //    at +1R the stop ratchets to breakeven, then trails 1R below the
+    //    high-water mark; a far 4R cap replaces the 2R target. Stop
+    //    updates take effect on the NEXT bar (no intrabar look-ahead).
+    TRAIL_ARM_R:      Number(process.env.TRAIL_ARM_R)      || 1.0,
+    TRAIL_DISTANCE_R: Number(process.env.TRAIL_DISTANCE_R) || 1.0,
+    HARD_TARGET_R:    Number(process.env.HARD_TARGET_R)    || 4.0,
+    // 3. EARLY STRUCTURAL TRIGGER (first-trigger entries). The +5% gate
+    //    forces lateness: by qualification, part of the move is gone. v3
+    //    admits candidates from +2% — but below the full gate ONLY the
+    //    structural strategies (ORB, VWAP reclaim) may fire; the
+    //    extension-chasers (volume_surge, squeeze) still need the full 5%.
+    EARLY_MIN_CHANGE_PCT: Number(process.env.EARLY_MIN_CHANGE_PCT) || 2,
+
     // Only trade short_squeeze when REAL SI (ORTEX/FINRA) backs the fuel.
     // Estimated-fuel squeeze signals were the worst performer in every
     // backtest window — the estimate is momentum re-labeled.

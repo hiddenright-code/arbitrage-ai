@@ -69,6 +69,20 @@ function positionSizeUSD(confidence) {
   return +(S.CAPITAL_PER_TRADE + (S.MAX_POSITION_SIZE - S.CAPITAL_PER_TRADE) * convScale).toFixed(2);
 }
 
+// v3: equal-risk sizing. Every trade risks the same dollars; the stop
+// distance (ATR-scaled) converts that into shares. Confidence no longer
+// scales size — the campaign proved confidence ≈ lateness, so scaling
+// with it meant betting most on the latest entries.
+function qtyForSignal(sig) {
+  if (S.STRATEGY_TUNING?.RULESET === 'v3' && sig.stopLoss < sig.price) {
+    const riskPerShare = sig.price - sig.stopLoss;
+    let qty = Math.floor(S.STRATEGY_TUNING.RISK_PER_TRADE_USD / riskPerShare);
+    qty = Math.min(qty, Math.floor(S.MAX_POSITION_SIZE / sig.price));   // notional cap holds
+    return qty;
+  }
+  return Math.floor(positionSizeUSD(sig.confidence) / sig.price);
+}
+
 // ─── Simulate one trading day ─────────────────────────────────
 // dayData: {
 //   dateEt, minuteBars: {SYM: bars}, prevClose: {SYM: n},
@@ -141,14 +155,31 @@ export function simulateDay(dayData, opts) {
         }
       }
 
-      // 2. Open position exits (stop checked FIRST — pessimistic).
+      // 2. Open position exits (stop checked FIRST — pessimistic). The
+      //    stop used here is the one standing BEFORE this bar; trailing
+      //    updates below only bind on LATER bars, so there is no bet on
+      //    intrabar high-before-low ordering.
       const pos = open[sym];
       if (pos && m > pos.entryMin) {
-        if (b.open <= pos.stop)        record(sym, pos, b.open, 'stop_gap', m);
-        else if (b.low <= pos.stop)    record(sym, pos, pos.stop, 'stop_loss', m);
+        const stopReason = pos.trailArmed && pos.stop >= pos.entry ? 'trail_stop' : null;
+        if (b.open <= pos.stop)        record(sym, pos, b.open, stopReason ?? 'stop_gap', m);
+        else if (b.low <= pos.stop)    record(sym, pos, pos.stop, stopReason ?? 'stop_loss', m);
         else if (b.open >= pos.target) record(sym, pos, b.open, 'target_gap', m);
         else if (b.high >= pos.target) record(sym, pos, pos.target, 'take_profit', m);
         else if (m >= FLAT_BY)         record(sym, pos, b.close, 'eod_flat', m);
+        else if (pos.trail) {
+          // v3 let-winners-run: at +TRAIL_ARM_R the stop ratchets to
+          // breakeven, then trails TRAIL_DISTANCE below the high-water
+          // mark. Ratchet only — the stop never loosens.
+          pos.highSince = Math.max(pos.highSince ?? pos.entry, b.high);
+          if (!pos.trailArmed && pos.highSince >= pos.trail.armAt) {
+            pos.trailArmed = true;
+            pos.stop = Math.max(pos.stop, pos.entry);
+          }
+          if (pos.trailArmed) {
+            pos.stop = Math.max(pos.stop, pos.highSince - pos.trail.distance);
+          }
+        }
       } else if (pos && m >= FLAT_BY) {
         record(sym, pos, b.close, 'eod_flat', m);
       }
@@ -179,11 +210,16 @@ export function simulateDay(dayData, opts) {
       const snap = buildSnapshot(sym, minuteBars[sym], upto, prevClose[sym] ?? 0);
       if (!snap) continue;
 
-      // The live scanner's gates, at this tick's state.
+      // The live scanner's gates, at this tick's state. Under v3 the
+      // momentum gate widens to EARLY_MIN_CHANGE_PCT — the signal layer
+      // then only lets STRUCTURAL strategies fire below the full gate.
+      const minChange = S.STRATEGY_TUNING?.RULESET === 'v3'
+        ? S.STRATEGY_TUNING.EARLY_MIN_CHANGE_PCT
+        : S.MIN_CHANGE_PCT;
       if (snap.price < S.PRICE_MIN || snap.price > S.PRICE_MAX) continue;
       if (snap.volume < S.MIN_DAILY_VOLUME) continue;
       snap.rvol = calculateRvol(snap.volume, priorDaily[sym] ?? [], { atEtMinutes: tick });
-      if (snap.rvol < S.MIN_RVOL || snap.changePct < S.MIN_CHANGE_PCT) continue;
+      if (snap.rvol < S.MIN_RVOL || snap.changePct < minChange) continue;
 
       // Score with the LIVE scorer; gate-passers rescued to WATCH (live rule).
       const bars120 = minuteBars[sym].slice(Math.max(0, upto - 120), upto);
@@ -202,12 +238,12 @@ export function simulateDay(dayData, opts) {
       if (health?.requireHighConviction && sig.confidence < 0.70) continue;
       if (sig.confidence < S.MIN_SIGNAL_SCORE) continue;
 
-      const usd = positionSizeUSD(sig.confidence);
-      const qty = Math.floor(usd / sig.price);
+      const qty = qtyForSignal(sig);
       if (qty < 1) continue;
 
       pending[sym] = {
         limit: sig.price, stop: sig.stopLoss, target: sig.takeProfit,
+        trail: sig.trail ?? null,
         strategy: sig.strategy, confidence: sig.confidence, tier: sig.tier,
         usd: +(qty * sig.price).toFixed(2), qty, placedMin: tick,
       };

@@ -384,11 +384,21 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
       // different strategy name (the substitution failure of round 1).
       .filter(s => {
         const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
+        const v2plus = TUNE.RULESET === 'v2' || TUNE.RULESET === 'v3';
         if (TUNE.STRATEGIES_ENABLED?.length && !TUNE.STRATEGIES_ENABLED.includes(s.strategy)) return false;
         if (TUNE.ENTRY_REQUIRE_VWAP && !(snapshot.vwap > 0 && snapshot.price > snapshot.vwap)) return false;
 
+        // ── Ruleset v3: early structural trigger. Candidates below the
+        // full +5% momentum gate may only enter via STRUCTURE (ORB break,
+        // VWAP reclaim) — the extension-chasing strategies still need the
+        // full gate. This is the anti-lateness fix: catch the runner at
+        // its first trigger instead of after the move has proven itself.
+        if (TUNE.RULESET === 'v3'
+            && (snapshot.changePct ?? 0) < SETTINGS.MIN_CHANGE_PCT
+            && !['opening_range_breakout', 'vwap_reclaim'].includes(s.strategy)) return false;
+
         // ── Ruleset v2 gates (literature-grounded; RULESET=baseline off) ──
-        if (TUNE.RULESET === 'v2') {
+        if (v2plus) {
           // Session time comes from the DATA (last minute bar), not the
           // wall clock — so replay and live agree. No tape → no entry.
           const lastBar = minuteBars?.[minuteBars.length - 1];
@@ -417,7 +427,7 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
       // than the strategy's structural stop), target = R_MULTIPLE × the
       // actual risk. Kaufman (volatility-scaled stops) + Tharp (R-multiples).
       const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
-      if (TUNE.RULESET === 'v2' && minuteBars?.length >= 15) {
+      if ((TUNE.RULESET === 'v2' || TUNE.RULESET === 'v3') && minuteBars?.length >= 15) {
         const a = atr(minuteBars.slice(-30), 14);
         if (a > 0 && best.price > 0) {
           const riskPct = Math.min(Math.max((TUNE.ATR_STOP_MULT * a) / best.price, TUNE.MIN_STOP_PCT), TUNE.MAX_STOP_PCT);
@@ -426,10 +436,24 @@ export function generateSignals(runners, newsMap = {}, squeezeMap = {}, minuteBa
           const stop    = Math.min(best.stopLoss ?? atrStop, atrStop);
           const risk    = best.price - stop;
           best.stopLoss   = +stop.toFixed(4);
-          best.takeProfit = +(best.price + TUNE.R_MULTIPLE * risk).toFixed(4);
-          best.takeProfitAggressive = +(best.price + (TUNE.R_MULTIPLE + 1) * risk).toFixed(4);
-          best.exitModel  = `atr(${TUNE.ATR_STOP_MULT}x)·${TUNE.R_MULTIPLE}R`;
           best.riskPct    = +(risk / best.price).toFixed(4);
+          if (TUNE.RULESET === 'v3') {
+            // v3: trailing exits. A fixed 2R target amputates the fat
+            // tails that define penny runners; instead the stop ratchets
+            // to breakeven at +TRAIL_ARM_R and trails TRAIL_DISTANCE_R
+            // below the high-water mark, with a far HARD_TARGET_R cap.
+            best.takeProfit = +(best.price + TUNE.HARD_TARGET_R * risk).toFixed(4);
+            best.takeProfitAggressive = best.takeProfit;
+            best.trail = {
+              armAt:    +(best.price + TUNE.TRAIL_ARM_R * risk).toFixed(4),
+              distance: +(TUNE.TRAIL_DISTANCE_R * risk).toFixed(4),
+            };
+            best.exitModel = `atr(${TUNE.ATR_STOP_MULT}x)·trail(${TUNE.TRAIL_ARM_R}R/${TUNE.TRAIL_DISTANCE_R}R)·cap${TUNE.HARD_TARGET_R}R`;
+          } else {
+            best.takeProfit = +(best.price + TUNE.R_MULTIPLE * risk).toFixed(4);
+            best.takeProfitAggressive = +(best.price + (TUNE.R_MULTIPLE + 1) * risk).toFixed(4);
+            best.exitModel  = `atr(${TUNE.ATR_STOP_MULT}x)·${TUNE.R_MULTIPLE}R`;
+          }
         }
       }
 

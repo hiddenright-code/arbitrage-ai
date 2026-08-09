@@ -106,7 +106,9 @@ async function main() {
       if (!pBar?.close) continue;
       if (dBar.volume < S.MIN_DAILY_VOLUME) continue;
       const maxChg = ((dBar.high - pBar.close) / pBar.close) * 100;
-      if (maxChg < S.MIN_CHANGE_PCT) continue;
+      const minChg = S.STRATEGY_TUNING?.RULESET === 'v3'
+        ? S.STRATEGY_TUNING.EARLY_MIN_CHANGE_PCT : S.MIN_CHANGE_PCT;
+      if (maxChg < minChg) continue;
       const loPx = Math.min(dBar.open, dBar.low), hiPx = Math.max(dBar.open, dBar.high);
       if (hiPx < S.PRICE_MIN || loPx > S.PRICE_MAX) continue;
       candidates.push(sym);
@@ -153,6 +155,7 @@ async function main() {
   const outDir = path.join(process.cwd(), 'data', 'backtests');
   fs.mkdirSync(outDir, { recursive: true });
   const variant = [
+    S.STRATEGY_TUNING.RULESET !== 'v2' ? S.STRATEGY_TUNING.RULESET : null,
     S.STRATEGY_TUNING.VOLUME_SURGE_MIN_CONF > 0 ? `vsconf${S.STRATEGY_TUNING.VOLUME_SURGE_MIN_CONF}` : null,
     S.STRATEGY_TUNING.VOLUME_SURGE_REQUIRE_VWAP ? 'vsvwap' : null,
     S.STRATEGY_TUNING.ENTRY_REQUIRE_VWAP ? 'entryvwap' : null,

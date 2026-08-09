@@ -250,7 +250,12 @@ export async function scanRunners() {
     // a tiny-float name isn't scored as neutral.
     if (inPlayCtx?.si?.freeFloat) snap.floatShares = inPlayCtx.si.freeFloat;
 
-    if (snap.rvol >= MIN_RVOL && snap.changePct >= MIN_CHANGE_PCT) {
+    // v3 admits candidates from the early threshold; the signal layer
+    // then only lets structural strategies (ORB / VWAP reclaim) fire
+    // below the full momentum gate.
+    const effMinChange = SETTINGS.STRATEGY_TUNING?.RULESET === 'v3'
+      ? SETTINGS.STRATEGY_TUNING.EARLY_MIN_CHANGE_PCT : MIN_CHANGE_PCT;
+    if (snap.rvol >= MIN_RVOL && snap.changePct >= effMinChange) {
       runnerSyms.push(symbol);
     } else if (inPlayCtx) {
       // Paused but still IN-PLAY: keep it surfaced (don't drop). A name

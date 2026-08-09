@@ -47,7 +47,18 @@ const SYMBOL_COOLDOWN_MS   = 30 * 60 * 1000;  // 30 min
 // Penny stocks are volatile — size DOWN as confidence/squeeze rises
 // is wrong; instead we scale UP slightly with conviction but always
 // cap hard. Kelly kicks in only after 30 completed trades.
-function positionSize(availableCapital, confidence) {
+function positionSize(availableCapital, confidence, signal = null) {
+  // v3: equal-risk sizing — every trade risks the same dollars, and the
+  // ATR stop distance converts that into shares. Confidence no longer
+  // scales size (the backtest campaign proved confidence ~ lateness, so
+  // confidence-scaled sizing bet most on the latest entries).
+  const TUNE = SETTINGS.STRATEGY_TUNING ?? {};
+  if (TUNE.RULESET === 'v3' && signal?.stopLoss < signal?.price) {
+    const riskPerShare = signal.price - signal.stopLoss;
+    const qty  = Math.floor(TUNE.RISK_PER_TRADE_USD / riskPerShare);
+    const size = Math.min(qty * signal.price, MAX_POSITION_SIZE, availableCapital);
+    return +Math.max(size, 0).toFixed(2);
+  }
   // Base size scales with confidence between MAX_TRADE_USD and MAX_POSITION_SIZE
   const convScale = Math.min(Math.max((confidence - 0.5) / 0.5, 0), 1);
   let size = MAX_TRADE_USD + (MAX_POSITION_SIZE - MAX_TRADE_USD) * convScale;
@@ -287,7 +298,7 @@ export async function executeQuantSignal(signal, confirmed = false) {
     return { success: false, reason: `Insufficient buying power: $${buyingPower.toFixed(2)}` };
   }
 
-  const tradeUSD    = positionSize(buyingPower, signal.confidence);
+  const tradeUSD    = positionSize(buyingPower, signal.confidence, signal);
   const entryPrice  = signal.price;
   const qty         = Math.floor(tradeUSD / entryPrice);   // Whole shares for penny stocks
   if (qty < 1) {
