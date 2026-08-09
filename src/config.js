@@ -267,6 +267,11 @@ export const SETTINGS = {
     PERSIST_PATH:   process.env.CATALYST_PERSIST_PATH || 'data/watchlist.json',
   },
 
+  // Where the executor persists sim/real trade history and open
+  // positions. Without this the validation record resets on every
+  // restart and a multi-week paper run can never accumulate.
+  EXECUTOR_PERSIST_PATH: process.env.EXECUTOR_PERSIST_PATH || 'data/executor-state.json',
+
   // ── Fees ─────────────────────────────────────────────────────
   FEES: { Alpaca: 0.0 },          // Commission-free
 

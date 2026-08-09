@@ -10,6 +10,8 @@
 //     before risking real capital
 // ─────────────────────────────────────────────────────────────
 
+import fs from 'fs';
+import path from 'path';
 import dotenv from 'dotenv';
 import { placeBracketOrder, getBuyingPower, closePosition, getOrder, cancelOrder } from './exchangeClient.js';
 import { fetchSnapshots } from './priceHistory.js';
@@ -38,6 +40,60 @@ const simHistory     = [];   // Completed sim trades (for validation)
 let dailyLossTracker  = { date: null, loss: 0 };
 let consecutiveLosses = 0;
 let coolingDownUntil  = 0;
+
+// ─── Persistence ──────────────────────────────────────────────
+// The sim trade record IS the validation evidence — it is the only
+// thing that tells us whether the live (information-rich) system beats
+// the replay baseline. Keeping it in memory meant every restart, crash
+// or deploy silently reset the track record to zero, so a multi-week
+// paper run could never actually accumulate. Persist it.
+//
+// Open positions persist too: without that, a restart mid-session
+// orphans them — the sim would never book their exits, permanently
+// biasing the stats toward whatever was closed before the restart.
+const STATE_PATH = path.isAbsolute(SETTINGS.EXECUTOR_PERSIST_PATH)
+  ? SETTINGS.EXECUTOR_PERSIST_PATH
+  : path.join(process.cwd(), SETTINGS.EXECUTOR_PERSIST_PATH);
+
+function saveState() {
+  try {
+    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
+    fs.writeFileSync(STATE_PATH, JSON.stringify({
+      version: 1,
+      savedAt: Date.now(),
+      simHistory, tradeHistory,
+      simPositions, openPositions,
+      dailyLossTracker, consecutiveLosses,
+    }, null, 2));
+  } catch (err) {
+    console.error('[Executor] state save failed:', err.message);
+  }
+}
+
+function loadState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+    if (raw?.version !== 1) return;
+    simHistory.push(...(raw.simHistory ?? []));
+    tradeHistory.push(...(raw.tradeHistory ?? []));
+    Object.assign(simPositions, raw.simPositions ?? {});
+    Object.assign(openPositions, raw.openPositions ?? {});
+    // Daily loss only carries over within the SAME calendar day —
+    // otherwise a restart would resurrect yesterday's loss cap.
+    if (raw.dailyLossTracker?.date === new Date().toDateString()) {
+      dailyLossTracker = raw.dailyLossTracker;
+      consecutiveLosses = raw.consecutiveLosses ?? 0;
+    }
+    const n = simHistory.length, open = Object.keys(simPositions).length;
+    if (n || open) {
+      console.log(`[Executor] Restored ${n} sim trades, ${open} open sim positions from disk`);
+    }
+  } catch {
+    /* first run — no state file yet */
+  }
+}
+
+loadState();
 
 // Per-symbol cooldown after a stop-out — avoid re-buying a falling knife
 const symbolCooldown      = {};
@@ -85,6 +141,7 @@ function positionSize(availableCapital, confidence, signal = null) {
 // ─── Record real trade result ─────────────────────────────────
 export function recordTradeResult(pnl, strategy) {
   tradeHistory.push({ pnl, strategy, timestamp: Date.now() });
+  saveState();
   if (tradeHistory.length > 200) tradeHistory.shift();
 
   const today = new Date().toDateString();
@@ -140,6 +197,7 @@ export function openSimPosition(signal) {
   };
 
   simPositions[signal.symbol] = pos;
+  saveState();
   console.log(`📋 Sim opened: ${signal.symbol} @ $${signal.price} | TP $${signal.takeProfit} | SL $${signal.stopLoss} | ${signal.strategy}`);
   return pos;
 }
@@ -201,6 +259,7 @@ export function checkSimPositions(snapshotMap) {
       };
 
       simHistory.push(result);
+      saveState();
       if (simHistory.length > 200) simHistory.shift();
       delete simPositions[symbol];
       closed.push(result);
